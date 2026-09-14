@@ -1,0 +1,21 @@
+# Android / Gradle
+android/.gradle/
+android/local.properties
+android/.idea/
+android/*.iml
+android/build/
+android/app/build/
+android/captures/
+android/.cxx/
+
+# Python / FastAPI
+backend/__pycache__/
+backend/*.pyc
+backend/venv/
+backend/.venv/
+backend/.env
+backend/*.egg-info/
+
+# General
+.DS_Store
+Thumbs.db
