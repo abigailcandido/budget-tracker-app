@@ -6,4 +6,7 @@ import kotlinx.serialization.Serializable
 data object TrackerList
 
 @Serializable
-data class TrackerDetail(val trackerId: Int)
+data class TrackerDetail(
+    val trackerId: Int,
+    val trackerName: String,
+)

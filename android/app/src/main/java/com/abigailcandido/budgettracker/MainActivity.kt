@@ -23,6 +23,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.abigailcandido.budgettracker.data.AuthRepository
 import com.abigailcandido.budgettracker.data.TrackerRepository
+import com.abigailcandido.budgettracker.data.WalletRepository
 import com.abigailcandido.budgettracker.data.local.TokenStore
 import com.abigailcandido.budgettracker.ui.auth.AuthScreen
 import com.abigailcandido.budgettracker.ui.auth.AuthViewModel
@@ -32,15 +33,17 @@ import com.abigailcandido.budgettracker.ui.pin.PinEntryScreen
 import com.abigailcandido.budgettracker.ui.pin.PinSetupScreen
 import com.abigailcandido.budgettracker.ui.pin.PinViewModel
 import com.abigailcandido.budgettracker.ui.theme.BudgetTrackerTheme
-import com.abigailcandido.budgettracker.ui.trackers.TrackerDetailScreen
 import com.abigailcandido.budgettracker.ui.trackers.TrackerListScreen
 import com.abigailcandido.budgettracker.ui.trackers.TrackerListViewModel
+import com.abigailcandido.budgettracker.ui.wallets.WalletListScreen
+import com.abigailcandido.budgettracker.ui.wallets.WalletListViewModel
 
 class MainActivity : ComponentActivity() {
 
     private val tokenStore by lazy { TokenStore(applicationContext) }
     private val authRepository by lazy { AuthRepository(tokenStore) }
     private val trackerRepository by lazy { TrackerRepository(tokenStore) }
+    private val walletRepository by lazy { WalletRepository(tokenStore) }
 
     private val authViewModel: AuthViewModel by viewModels { AuthViewModel.factory(authRepository) }
     private val pinViewModel: PinViewModel by viewModels { PinViewModel.factory(authRepository) }
@@ -107,6 +110,7 @@ class MainActivity : ComponentActivity() {
 
                     else -> SignedInNavHost(
                         trackerRepository = trackerRepository,
+                        walletRepository = walletRepository,
                         onSignOut = signOut,
                     )
                 }
@@ -126,6 +130,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun SignedInNavHost(
     trackerRepository: TrackerRepository,
+    walletRepository: WalletRepository,
     onSignOut: () -> Unit,
 ) {
     val navController = rememberNavController()
@@ -140,7 +145,16 @@ private fun SignedInNavHost(
 
             TrackerListScreen(
                 state = listState,
-                onOpenTracker = { trackerId -> navController.navigate(TrackerDetail(trackerId)) },
+                onOpenTracker = { trackerId ->
+                    // The name is already in hand from the list, so the detail
+                    // screen can show a title without a second request for
+                    // something the user just tapped.
+                    val name = listState.trackers
+                        .firstOrNull { it.id == trackerId }
+                        ?.name
+                        .orEmpty()
+                    navController.navigate(TrackerDetail(trackerId, name))
+                },
                 onDeleteTracker = listViewModel::deleteTracker,
                 onAddClick = listViewModel::onAddClick,
                 onNewNameChange = listViewModel::onNewNameChange,
@@ -154,9 +168,23 @@ private fun SignedInNavHost(
         composable<TrackerDetail> { backStackEntry ->
             val route: TrackerDetail = backStackEntry.toRoute()
 
-            TrackerDetailScreen(
-                trackerId = route.trackerId,
+            val walletViewModel: WalletListViewModel = viewModel(
+                factory = WalletListViewModel.factory(route.trackerId, walletRepository),
+            )
+            val walletState by walletViewModel.uiState.collectAsState()
+
+            WalletListScreen(
+                trackerName = route.trackerName,
+                state = walletState,
                 onBack = { navController.popBackStack() },
+                onAddClick = walletViewModel::onAddClick,
+                onNameChange = walletViewModel::onNameChange,
+                onCurrencyChange = walletViewModel::onCurrencyChange,
+                onOpeningBalanceChange = walletViewModel::onOpeningBalanceChange,
+                onConfirmCreate = walletViewModel::createWallet,
+                onDismissCreate = walletViewModel::onDismissCreate,
+                onDeleteWallet = walletViewModel::deleteWallet,
+                onRetry = walletViewModel::refresh,
             )
         }
     }
