@@ -9,8 +9,8 @@ android/captures/
 android/.cxx/
 
 # Python / FastAPI
-backend/__pycache__/
-backend/*.pyc
+**/__pycache__/
+*.pyc
 backend/venv/
 backend/.venv/
 backend/.env
