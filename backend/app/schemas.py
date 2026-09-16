@@ -1,9 +1,18 @@
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 BCRYPT_MAX_PASSWORD_BYTES = 72
 PIN_PATTERN = r"^\d{4,6}$"
+CURRENCY_PATTERN = r"^[A-Za-z]{3}$"
+MONEY_MAX_DIGITS = 14
+MONEY_DECIMAL_PLACES = 2
+
+
+def format_money(value: Decimal) -> str:
+    """Render a stored amount as a fixed two-decimal string for the API."""
+    return f"{value:.2f}"
 
 
 class RegisterRequest(BaseModel):
@@ -46,8 +55,8 @@ class VerifyPinRequest(BaseModel):
     pin: str = Field(pattern=PIN_PATTERN)
 
 
-class _TrackerNameModel(BaseModel):
-    """Shared name handling for tracker requests.
+class _NamedRequest(BaseModel):
+    """Shared name handling for anything the user names.
 
     A length constraint alone would accept a name of three spaces, which is
     blank to a reader but not to a validator. Stripping first, then rejecting
@@ -65,15 +74,48 @@ class _TrackerNameModel(BaseModel):
         return cleaned
 
 
-class TrackerCreateRequest(_TrackerNameModel):
+class TrackerCreateRequest(_NamedRequest):
     pass
 
 
-class TrackerUpdateRequest(_TrackerNameModel):
+class TrackerUpdateRequest(_NamedRequest):
     pass
 
 
 class TrackerResponse(BaseModel):
     id: int
     name: str
+    created_at: datetime
+
+
+class WalletCreateRequest(_NamedRequest):
+    currency: str = Field(pattern=CURRENCY_PATTERN)
+    opening_balance: Decimal = Field(
+        default=Decimal("0"),
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+    )
+
+    @field_validator("currency")
+    @classmethod
+    def normalise_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class WalletUpdateRequest(_NamedRequest):
+    """Only the name can change.
+
+    Currency is deliberately absent. Changing it would silently reinterpret
+    every amount already recorded in that wallet — a balance of 5,000 pesos
+    becoming 5,000 dollars without a single transaction being edited. If a
+    wallet is in the wrong currency, the honest fix is a new wallet.
+    """
+
+
+class WalletResponse(BaseModel):
+    id: int
+    main_tracker_id: int
+    name: str
+    currency: str
+    balance: str
     created_at: datetime

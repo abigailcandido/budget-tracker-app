@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
 from app.models import MainTracker, SavingsTrackerLink, User, Wallet
+from app.ownership import get_owned_tracker
 from app.schemas import TrackerCreateRequest, TrackerResponse, TrackerUpdateRequest
 
 router = APIRouter(prefix="/trackers", tags=["trackers"])
@@ -14,32 +15,6 @@ def _to_response(tracker: MainTracker) -> TrackerResponse:
         name=tracker.name,
         created_at=tracker.created_at,
     )
-
-
-def _get_owned_tracker(tracker_id: int, user: User, db: Session) -> MainTracker:
-    """Fetch a tracker belonging to this user, or raise 404.
-
-    The owner check is part of the same query as the id lookup, not a separate
-    step afterwards. That ordering is what makes it safe: there is no moment
-    where the row has been loaded but not yet authorised.
-
-    A tracker owned by someone else returns 404 rather than 403, so it is
-    indistinguishable from one that does not exist. A 403 would confirm the row
-    is real, which is information a stranger has no business receiving.
-    """
-    tracker = (
-        db.query(MainTracker)
-        .filter(MainTracker.id == tracker_id, MainTracker.user_id == user.id)
-        .first()
-    )
-
-    if tracker is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tracker not found",
-        )
-
-    return tracker
 
 
 def _reject_duplicate_name(
@@ -113,7 +88,7 @@ def get_tracker(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TrackerResponse:
-    return _to_response(_get_owned_tracker(tracker_id, user, db))
+    return _to_response(get_owned_tracker(tracker_id, user, db))
 
 
 @router.patch(
@@ -127,7 +102,7 @@ def rename_tracker(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TrackerResponse:
-    tracker = _get_owned_tracker(tracker_id, user, db)
+    tracker = get_owned_tracker(tracker_id, user, db)
     _reject_duplicate_name(payload.name, user, db, exclude_id=tracker.id)
 
     tracker.name = payload.name
@@ -147,11 +122,8 @@ def delete_tracker(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
-    tracker = _get_owned_tracker(tracker_id, user, db)
+    tracker = get_owned_tracker(tracker_id, user, db)
 
-    # Deleting a tracker that still holds wallets would orphan every wallet,
-    # transaction and balance inside it. Refusing forces the destructive part
-    # to be an explicit, visible act rather than a side effect of one tap.
     has_wallets = (
         db.query(Wallet).filter(Wallet.main_tracker_id == tracker.id).first() is not None
     )
