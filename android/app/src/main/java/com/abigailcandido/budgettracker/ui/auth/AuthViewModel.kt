@@ -6,6 +6,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.abigailcandido.budgettracker.data.AuthRepository
 import com.abigailcandido.budgettracker.data.remote.ApiResult
+import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,15 +23,11 @@ data class AuthUiState(
     val password: String = "",
     val isSubmitting: Boolean = false,
     val errorMessage: String? = null,
-    val isSignedIn: Boolean = false,
     val isCheckingSession: Boolean = true,
+    val isSignedIn: Boolean = false,
+    val hasPin: Boolean = false,
+    val isUnlocked: Boolean = false,
 ) {
-    /**
-     * The minimum length is enforced when registering, because that mirrors what
-     * the server will accept. It is deliberately not enforced when signing in —
-     * inventing a client-side rule there would lock out any account whose
-     * password predates the rule, and the server is the authority either way.
-     */
     val canSubmit: Boolean
         get() = !isSubmitting &&
                 email.isNotBlank() &&
@@ -44,10 +41,7 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            val signedIn = repository.isSignedIn()
-            _uiState.update { it.copy(isSignedIn = signedIn, isCheckingSession = false) }
-        }
+        refreshSession()
     }
 
     fun onEmailChange(value: String) {
@@ -74,26 +68,84 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
                 AuthMode.Register -> repository.register(current.email, current.password)
             }
 
-            _uiState.update { state ->
-                when (result) {
-                    is ApiResult.Success -> state.copy(
-                        isSubmitting = false,
-                        isSignedIn = true,
-                        password = "",
-                    )
-                    is ApiResult.Failure -> state.copy(
-                        isSubmitting = false,
-                        errorMessage = result.message,
-                    )
+            when (result) {
+                is ApiResult.Success -> {
+                    _uiState.update { it.copy(password = "") }
+                    refreshSession()
+                }
+                is ApiResult.Failure -> _uiState.update {
+                    it.copy(isSubmitting = false, errorMessage = result.message)
                 }
             }
         }
+    }
+
+    /** Called when the PIN setup screen reports success. */
+    fun onPinSet() {
+        _uiState.update { it.copy(hasPin = true, isUnlocked = true) }
+    }
+
+    /** Called when the PIN entry screen reports a correct PIN. */
+    fun onPinVerified() {
+        _uiState.update { it.copy(isUnlocked = true) }
+    }
+
+    /**
+     * Re-locks the app. Called when it goes to the background, so returning to it
+     * requires the PIN again — which is the whole point of having one on top of a
+     * session that deliberately never expires.
+     */
+    fun lock() {
+        _uiState.update { if (it.hasPin) it.copy(isUnlocked = false) else it }
     }
 
     fun signOut() {
         viewModelScope.launch {
             repository.logout()
             _uiState.value = AuthUiState(isCheckingSession = false)
+        }
+    }
+
+    /**
+     * Asks the server who we are. This does more than fetch `hasPin`: it is also
+     * how a token that the server has already discarded gets detected, since the
+     * repository clears local credentials on a 401 and we fall back to the login
+     * screen rather than showing a signed-in UI backed by a dead session.
+     */
+    private fun refreshSession() {
+        viewModelScope.launch {
+            if (!repository.isSignedIn()) {
+                _uiState.update {
+                    it.copy(isCheckingSession = false, isSubmitting = false, isSignedIn = false)
+                }
+                return@launch
+            }
+
+            when (val result = repository.currentUser()) {
+                is ApiResult.Success -> _uiState.update {
+                    it.copy(
+                        isCheckingSession = false,
+                        isSubmitting = false,
+                        isSignedIn = true,
+                        hasPin = result.data.hasPin,
+                        isUnlocked = false,
+                    )
+                }
+                is ApiResult.Failure -> _uiState.update {
+                    it.copy(
+                        isCheckingSession = false,
+                        isSubmitting = false,
+                        isSignedIn = false,
+                        // A 401 simply means the session ended; that is not an error
+                        // worth showing someone who is about to see a login form.
+                        errorMessage = if (result.status == HttpStatusCode.Unauthorized) {
+                            null
+                        } else {
+                            result.message
+                        },
+                    )
+                }
+            }
         }
     }
 

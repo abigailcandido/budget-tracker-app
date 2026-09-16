@@ -119,7 +119,7 @@ def set_pin(
     # cannot simply overwrite the PIN that is meant to keep them out.
     if not verify_password(payload.password, user.hashed_password):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="Incorrect password",
         )
 
@@ -144,6 +144,6 @@ def verify_pin(
 
     if not verify_password(payload.pin, user.hashed_pin):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="Incorrect PIN",
         )
