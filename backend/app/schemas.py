@@ -44,3 +44,36 @@ class SetPinRequest(BaseModel):
 
 class VerifyPinRequest(BaseModel):
     pin: str = Field(pattern=PIN_PATTERN)
+
+
+class _TrackerNameModel(BaseModel):
+    """Shared name handling for tracker requests.
+
+    A length constraint alone would accept a name of three spaces, which is
+    blank to a reader but not to a validator. Stripping first, then rejecting
+    what is left if it is empty, is what actually enforces "must have a name".
+    """
+
+    name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("name")
+    @classmethod
+    def strip_and_require_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Name must not be blank")
+        return cleaned
+
+
+class TrackerCreateRequest(_TrackerNameModel):
+    pass
+
+
+class TrackerUpdateRequest(_TrackerNameModel):
+    pass
+
+
+class TrackerResponse(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
