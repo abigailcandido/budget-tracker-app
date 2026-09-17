@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 BCRYPT_MAX_PASSWORD_BYTES = 72
 PIN_PATTERN = r"^\d{4,6}$"
@@ -119,3 +119,44 @@ class WalletResponse(BaseModel):
     currency: str
     balance: str
     created_at: datetime
+
+
+class CategoryCreateRequest(_NamedRequest):
+    main_tracker_id: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Leave this out entirely for a category available across every "
+            "tracker. Supply a tracker id to make it private to that tracker."
+        ),
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"name": "Groceries"}},
+    )
+
+
+class CategoryUpdateRequest(_NamedRequest):
+    """Only the name can change.
+
+    A category's scope is fixed once created. Promoting a private category to
+    global, or demoting the reverse, would change which trackers can see
+    transactions already filed under it — so the honest fix is a new category.
+    """
+
+
+class CategoryResponse(BaseModel):
+    id: int
+    name: str
+    main_tracker_id: int | None
+    is_global: bool
+    created_at: datetime
+
+
+class TrackerCategoryResponse(BaseModel):
+    """A category as it appears from inside one particular tracker."""
+
+    id: int
+    name: str
+    is_global: bool
+    is_enabled: bool

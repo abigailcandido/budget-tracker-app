@@ -1,12 +1,13 @@
 from fastapi import FastAPI
 
-from app.routers import auth, trackers, wallets
+from app.routers import auth, categories, trackers, wallets
 
 app = FastAPI(title="Budget Tracker API")
 
 app.include_router(auth.router)
 app.include_router(trackers.router)
 app.include_router(wallets.router)
+app.include_router(categories.router)
 
 
 @app.get("/")

@@ -2,7 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
-from app.models import MainTracker, SavingsTrackerLink, User, Wallet
+from app.models import (
+    Category,
+    MainTracker,
+    SavingsTrackerLink,
+    TrackerCategory,
+    User,
+    Wallet,
+)
 from app.ownership import get_owned_tracker
 from app.schemas import TrackerCreateRequest, TrackerResponse, TrackerUpdateRequest
 
@@ -53,6 +60,18 @@ def create_tracker(
 
     tracker = MainTracker(user_id=user.id, name=payload.name)
     db.add(tracker)
+    db.flush()
+
+    # A new tracker starts with every global category already switched on, so
+    # it is usable immediately rather than arriving with an empty picker.
+    global_categories = (
+        db.query(Category)
+        .filter(Category.user_id == user.id, Category.main_tracker_id.is_(None))
+        .all()
+    )
+    for category in global_categories:
+        db.add(TrackerCategory(category_id=category.id, main_tracker_id=tracker.id))
+
     db.commit()
     db.refresh(tracker)
 
@@ -144,6 +163,22 @@ def delete_tracker(
             status_code=status.HTTP_409_CONFLICT,
             detail="This tracker is linked to a savings tracker and cannot be deleted",
         )
+
+    has_private_categories = (
+        db.query(Category).filter(Category.main_tracker_id == tracker.id).first()
+        is not None
+    )
+    if has_private_categories:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Delete this tracker's private categories before deleting it",
+        )
+
+    # Category switches are bookkeeping rather than user data, so they are
+    # cleared automatically rather than blocking the delete.
+    db.query(TrackerCategory).filter(
+        TrackerCategory.main_tracker_id == tracker.id
+    ).delete()
 
     db.delete(tracker)
     db.commit()

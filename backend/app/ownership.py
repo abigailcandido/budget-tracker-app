@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.models import MainTracker, User, Wallet
+from app.models import Category, MainTracker, User, Wallet
 
 
 def get_owned_tracker(tracker_id: int, user: User, db: Session) -> MainTracker:
@@ -46,3 +46,20 @@ def get_owned_wallet(wallet_id: int, user: User, db: Session) -> Wallet:
         )
 
     return wallet
+
+
+def get_owned_category(category_id: int, user: User, db: Session) -> Category:
+    """Fetch a category belonging to this user, or raise 404."""
+    category = (
+        db.query(Category)
+        .filter(Category.id == category_id, Category.user_id == user.id)
+        .first()
+    )
+
+    if category is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Category not found",
+        )
+
+    return category
