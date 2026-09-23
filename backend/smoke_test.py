@@ -111,6 +111,9 @@ def main() -> None:
     status, _ = call("POST", "/trackers", token_a, {"name": "Tracker One"})
     check("duplicate tracker name rejected", status, 409)
 
+    status, _ = call("POST", "/trackers", token_a, {"name": "tracker one"})
+    check("tracker name differing only in case rejected", status, 409)
+
     status, _ = call("POST", "/trackers", token_a, {"name": "   "})
     check("blank tracker name rejected", status, 422)
 
@@ -142,6 +145,9 @@ def main() -> None:
 
     status, _ = call("POST", "/categories", token_a, {"name": "Groceries"})
     check("duplicate category name rejected", status, 409)
+
+    status, _ = call("POST", "/categories", token_a, {"name": "groceries"})
+    check("category name differing only in case rejected", status, 409)
 
     print("\nCategory switches")
     status, _ = call("DELETE", f"/trackers/{one}/categories/{groceries['id']}", token_a)
@@ -191,6 +197,11 @@ def main() -> None:
         "POST", f"/trackers/{one}/wallets", token_a, {"name": "Cash", "currency": "PHP"}
     )
     check("duplicate wallet name in same tracker rejected", status, 409)
+
+    status, _ = call(
+        "POST", f"/trackers/{one}/wallets", token_a, {"name": "cash", "currency": "PHP"}
+    )
+    check("wallet name differing only in case rejected", status, 409)
 
     status, _ = call(
         "POST", f"/trackers/{two}/wallets", token_a, {"name": "Cash", "currency": "PHP"}

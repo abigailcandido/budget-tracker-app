@@ -114,7 +114,7 @@ class WalletUpdateRequest(_NamedRequest):
 
 class WalletResponse(BaseModel):
     id: int
-    main_tracker_id: int
+    main_tracker_id: int | None
     name: str
     currency: str
     balance: str

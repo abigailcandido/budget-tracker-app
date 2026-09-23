@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
@@ -47,7 +47,7 @@ def _reject_duplicate_name(
     """
     query = db.query(Category).filter(
         Category.user_id == user.id,
-        Category.name == name,
+        func.lower(Category.name) == name.lower(),
     )
 
     if exclude_id is not None:

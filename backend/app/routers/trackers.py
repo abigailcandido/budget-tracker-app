@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
@@ -32,7 +33,7 @@ def _reject_duplicate_name(
 ) -> None:
     query = db.query(MainTracker).filter(
         MainTracker.user_id == user.id,
-        MainTracker.name == name,
+        func.lower(MainTracker.name) == name.lower(),
     )
 
     if exclude_id is not None:
