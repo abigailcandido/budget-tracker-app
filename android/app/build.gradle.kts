@@ -18,19 +18,23 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        buildConfigField(
-            "String",
-            "API_BASE_URL",
-            "\"https://budget-tracker-api-fpd3.onrender.com\""
-        )
     }
 
     buildTypes {
+        debug {
+            // Your laptop's address on this wifi. Works from both the emulator
+            // and the physical phone, as long as both are on the same network.
+            buildConfigField("String", "API_BASE_URL", "\"http://192.168.68.112:8000\"")
+        }
         release {
             optimization {
                 enable = false
             }
+            buildConfigField(
+                "String",
+                "API_BASE_URL",
+                "\"https://budget-tracker-api-fpd3.onrender.com\""
+            )
         }
     }
     compileOptions {
