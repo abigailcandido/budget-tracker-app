@@ -177,6 +177,132 @@ def main() -> None:
     status, _ = call("PATCH", f"/categories/{meds['id']}", token_a, {"name": "Groceries"})
     check("rename onto an existing name rejected", status, 409)
 
+    print("\nSubcategories")
+    status, bills = call("POST", "/categories", token_a, {"name": "Bills"})
+    check("create a parent category", status, 201)
+    check("a new category has no children", bills["has_children"], False)
+
+    status, electricity = call(
+        "POST", "/categories", token_a, {"name": "Electricity", "parent_id": bills["id"]}
+    )
+    check("create a subcategory", status, 201)
+    check("subcategory points at its parent", electricity["parent_id"], bills["id"])
+    # Scope is inherited, never chosen: a private child under a global parent
+    # would be invisible in trackers where the parent is perfectly visible.
+    check("subcategory inherits its parent's scope", electricity["is_global"], True)
+
+    status, rows = call("GET", "/categories", token_a)
+    parent_row = next((row for row in rows if row["id"] == bills["id"]), {})
+    check("parent now reports having children", parent_row.get("has_children"), True)
+
+    status, _ = call(
+        "POST",
+        "/categories",
+        token_a,
+        {"name": "Meralco", "parent_id": electricity["id"]},
+    )
+    check("a third level is rejected", status, 409)
+
+    status, _ = call(
+        "POST",
+        "/categories",
+        token_a,
+        {"name": "electricity", "parent_id": bills["id"]},
+    )
+    check("duplicate sibling name rejected", status, 409)
+
+    status, water = call(
+        "POST", "/categories", token_a, {"name": "Water", "parent_id": bills["id"]}
+    )
+    check("second subcategory accepted", status, 201)
+
+    status, _ = call("DELETE", f"/categories/{bills['id']}", token_a)
+    check("parent holding subcategories cannot be deleted", status, 409)
+
+    print("\nSubcategory switches")
+    # Everything below runs against the second tracker, so the first tracker's
+    # state stays as the earlier checks left it.
+    status, _ = call("DELETE", f"/trackers/{two}/categories/{water['id']}", token_a)
+    check("switch one subcategory off", status, 204)
+
+    status, rows = call("GET", f"/trackers/{two}/categories", token_a)
+    check(
+        "parent stays on while a sibling is still on",
+        enabled_names(rows),
+        ["Bills", "Electricity", "Groceries"],
+    )
+
+    status, _ = call("DELETE", f"/trackers/{two}/categories/{electricity['id']}", token_a)
+    check("switch off the last subcategory that was on", status, 204)
+
+    # A parent cannot be chosen directly, so one left on with nothing beneath it
+    # would be a dead end in every picker. It goes off with its last child.
+    status, rows = call("GET", f"/trackers/{two}/categories", token_a)
+    check(
+        "parent goes off with its last subcategory",
+        enabled_names(rows),
+        ["Groceries"],
+    )
+
+    status, _ = call("PUT", f"/trackers/{two}/categories/{electricity['id']}", token_a)
+    check("switch a subcategory back on", status, 204)
+
+    status, rows = call("GET", f"/trackers/{two}/categories", token_a)
+    check(
+        "parent returns with its subcategory",
+        enabled_names(rows),
+        ["Bills", "Electricity", "Groceries"],
+    )
+
+    status, _ = call("DELETE", f"/trackers/{two}/categories/{bills['id']}", token_a)
+    check("switch the parent off", status, 204)
+
+    status, rows = call("GET", f"/trackers/{two}/categories", token_a)
+    check("children go off with the parent", enabled_names(rows), ["Groceries"])
+
+    status, _ = call("PUT", f"/trackers/{two}/categories/{bills['id']}", token_a)
+    check("switch the parent on", status, 204)
+
+    status, rows = call("GET", f"/trackers/{two}/categories", token_a)
+    check(
+        "children come back with the parent",
+        enabled_names(rows),
+        ["Bills", "Electricity", "Groceries", "Water"],
+    )
+
+    status, tracker_four = call(
+        "POST",
+        "/trackers",
+        token_a,
+        {"name": "Tracker Four", "category_ids": [electricity["id"]]},
+    )
+    check("create a tracker choosing one subcategory", status, 201)
+
+    status, rows = call("GET", f"/trackers/{tracker_four['id']}/categories", token_a)
+    check(
+        "a chosen subcategory brings its parent along",
+        enabled_names(rows),
+        ["Bills", "Electricity"],
+    )
+
+    print("\nName scoping")
+    status, _ = call(
+        "POST", "/categories", token_a, {"name": "Rent", "main_tracker_id": one}
+    )
+    check("private category in the first tracker", status, 201)
+
+    # Two categories private to different trackers never appear together, so
+    # they may share a name. Refusing this would block a name with a category
+    # the user cannot see from where they are standing.
+    status, _ = call(
+        "POST", "/categories", token_a, {"name": "Rent", "main_tracker_id": two}
+    )
+    check("same private name allowed in another tracker", status, 201)
+
+    # A global category appears everywhere, so it has to differ from everything.
+    status, _ = call("POST", "/categories", token_a, {"name": "Rent"})
+    check("a global category cannot reuse a private name", status, 409)
+
     print("\nWallets")
     status, wallet = call(
         "POST",
@@ -219,7 +345,11 @@ def main() -> None:
     check("unused category can be deleted", status, 204)
 
     status, rows = call("GET", f"/trackers/{one}/categories", token_a)
-    check("deleted category leaves no trace in tracker list", names(rows), ["Groceries"])
+    check(
+        "deleted category leaves no trace in tracker list",
+        names(rows),
+        ["Bills", "Electricity", "Groceries", "Rent", "Water"],
+    )
 
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)
