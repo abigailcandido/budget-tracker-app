@@ -339,7 +339,7 @@ def create_category(
     if payload.parent_id is not None:
         parent = get_owned_category(payload.parent_id, user, db)
 
-        if parent.parent_id is not None:
+        if parent.parent_id is not None or payload.subcategory_names:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Subcategories cannot have subcategories of their own",
@@ -362,9 +362,6 @@ def create_category(
     if scope_tracker_id is not None:
         tracker = get_owned_tracker(scope_tracker_id, user, db)
 
-    # tracker_ids only makes sense for a top-level global category. Rejecting
-    # it elsewhere rather than quietly ignoring it means a client sending it by
-    # mistake finds out, instead of wondering why its switches were discarded.
     if payload.tracker_ids is not None:
         if parent is not None:
             raise HTTPException(
@@ -379,8 +376,6 @@ def create_category(
 
     _reject_duplicate_name(payload.name, payload.parent_id, scope_tracker_id, user, db)
 
-    # Everything that can fail is resolved before anything is written, so a bad
-    # id leaves no half-created category behind.
     if parent is not None:
         link_targets: list[MainTracker] = []
     elif tracker is not None:
@@ -401,6 +396,22 @@ def create_category(
     db.flush()
 
     _link_new_category(category, parent, link_targets, db)
+
+    # Children created alongside a brand-new parent share its scope and are
+    # switched on in exactly the trackers it is. Nothing is committed until all
+    # of them are in, so a failure part-way leaves no half-built family behind.
+    for child_name in payload.subcategory_names or []:
+        child = Category(
+            user_id=user.id,
+            name=child_name,
+            parent_id=category.id,
+            main_tracker_id=category.main_tracker_id,
+        )
+        db.add(child)
+        db.flush()
+
+        for target in link_targets:
+            db.add(TrackerCategory(category_id=child.id, main_tracker_id=target.id))
 
     db.commit()
     db.refresh(category)

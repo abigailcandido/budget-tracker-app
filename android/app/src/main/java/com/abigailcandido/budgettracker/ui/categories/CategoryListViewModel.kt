@@ -6,6 +6,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.remote.ApiResult
+import com.abigailcandido.budgettracker.data.remote.CategoryResponse
 import com.abigailcandido.budgettracker.data.remote.TrackerCategoryResponse
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -36,36 +37,31 @@ data class CategoryListUiState(
     val errorMessage: String? = null,
     val addRequest: AddRequest? = null,
     val newName: String = "",
+    val makeGlobal: Boolean = false,
+    val wantsSubcategories: Boolean = false,
+    val subcategoryDraft: String = "",
+    val subcategoryNames: List<String> = emptyList(),
     val isCreating: Boolean = false,
     val createError: String? = null,
     val pendingDeleteId: Int? = null,
     val busyCategoryIds: Set<Int> = emptySet(),
     val actionError: String? = null,
-    // Which parents are showing their subcategories. Groups start closed so a
-    // long list stays scannable; the point of the hierarchy is that you only
-    // open the family you're actually working on.
     val expandedParentIds: Set<Int> = emptySet(),
 ) {
     val trimmedName: String
         get() = newName.trim()
 
-    /** Top-level categories, already in name order from the server. */
     val parents: List<TrackerCategoryResponse>
         get() = categories.filter { it.parentId == null }
 
-    /** Subcategories, grouped under the id of the parent they belong to. */
     val childrenByParent: Map<Int, List<TrackerCategoryResponse>>
         get() = categories
             .filter { it.parentId != null }
             .groupBy { it.parentId!! }
 
     /**
-     * A shared category already carrying the name being typed.
-     *
-     * When this is non-null the dialog stops offering to create anything and
-     * offers to switch that one on instead. A second category with the same
-     * name would leave two entries nobody can tell apart in every picker from
-     * then on — and the one they meant already exists.
+     * A shared category already carrying the name being typed. When set, the
+     * dialog offers to switch that one on instead of creating a lookalike.
      */
     val existingGlobalMatch: TrackerCategoryResponse?
         get() {
@@ -78,11 +74,9 @@ data class CategoryListUiState(
         }
 
     /**
-     * A name clash the app can see and should refuse without asking the server.
-     *
-     * Only clashes visible from this tracker are caught here. A name belonging
-     * to a category private to a different tracker isn't in this list at all,
-     * so the server's 409 stays the real backstop.
+     * A clash visible from this tracker, refused before asking the server. A
+     * name private to a different tracker isn't in this list, so the server's
+     * 409 remains the real backstop.
      */
     val blockingDuplicate: TrackerCategoryResponse?
         get() {
@@ -147,21 +141,17 @@ class CategoryListViewModel(
     }
 
     fun onAddTopLevelClick() {
-        _uiState.update {
-            it.copy(addRequest = AddRequest.TopLevel, newName = "", createError = null)
-        }
+        _uiState.update { it.withFreshDraft(AddRequest.TopLevel) }
     }
 
     fun onAddSubcategoryClick(parent: TrackerCategoryResponse) {
         _uiState.update {
-            it.copy(
-                addRequest = AddRequest.Subcategory(
+            it.withFreshDraft(
+                AddRequest.Subcategory(
                     parentId = parent.id,
                     parentName = parent.name,
                     parentIsGlobal = parent.isGlobal,
-                ),
-                newName = "",
-                createError = null,
+                )
             )
         }
     }
@@ -175,15 +165,45 @@ class CategoryListViewModel(
         _uiState.update { it.copy(newName = value, createError = null) }
     }
 
+    fun onMakeGlobalChange(value: Boolean) {
+        _uiState.update { it.copy(makeGlobal = value) }
+    }
+
+    fun onWantsSubcategoriesChange(value: Boolean) {
+        _uiState.update { it.copy(wantsSubcategories = value) }
+    }
+
+    fun onSubcategoryDraftChange(value: String) {
+        _uiState.update { it.copy(subcategoryDraft = value) }
+    }
+
+    fun onAddSubcategoryName() {
+        _uiState.update {
+            it.copy(
+                subcategoryNames = it.subcategoryNames.withSubcategory(it.subcategoryDraft),
+                subcategoryDraft = "",
+            )
+        }
+    }
+
+    fun onRemoveSubcategoryName(name: String) {
+        _uiState.update { it.copy(subcategoryNames = it.subcategoryNames - name) }
+    }
+
     fun submitAdd() {
         val current = _uiState.value
         val request = current.addRequest ?: return
         if (!current.canSubmit) return
 
+        val existing = current.existingGlobalMatch
+        val subcategories = subcategoriesToSend(
+            current.wantsSubcategories,
+            current.subcategoryNames,
+            current.subcategoryDraft,
+        )
+
         viewModelScope.launch {
             _uiState.update { it.copy(isCreating = true, createError = null) }
-
-            val existing = current.existingGlobalMatch
 
             val result = when {
                 existing != null ->
@@ -192,22 +212,34 @@ class CategoryListViewModel(
                 request is AddRequest.Subcategory ->
                     repository.createSubcategory(current.newName, request.parentId)
 
+                // Shared, but switched on only here. Every other tracker sees
+                // it switched off until someone decides it belongs there too.
+                current.makeGlobal ->
+                    repository.createGlobal(
+                        name = current.newName,
+                        trackerIds = listOf(trackerId),
+                        subcategoryNames = subcategories,
+                    )
+
                 else ->
-                    repository.createPrivate(current.newName, trackerId)
+                    repository.createPrivate(current.newName, trackerId, subcategories)
             }
 
             when (result) {
                 is ApiResult.Success -> {
+                    val createdId = (result.data as? CategoryResponse)?.id
+                    val openId = when {
+                        request is AddRequest.Subcategory -> request.parentId
+                        subcategories.isNotEmpty() -> createdId
+                        else -> null
+                    }
                     _uiState.update {
                         it.copy(
                             isCreating = false,
                             addRequest = null,
                             newName = "",
-                            // Open the parent, so a new subcategory appears in
-                            // front of the user rather than inside a closed
-                            // group they then have to go looking for.
-                            expandedParentIds = if (request is AddRequest.Subcategory) {
-                                it.expandedParentIds + request.parentId
+                            expandedParentIds = if (openId != null) {
+                                it.expandedParentIds + openId
                             } else {
                                 it.expandedParentIds
                             },
@@ -233,11 +265,8 @@ class CategoryListViewModel(
             _uiState.update { it.copy(busyCategoryIds = it.busyCategoryIds - categoryId) }
 
             when (result) {
-                // A full reload rather than flipping one switch locally. The
-                // server cascades these — turning a parent off takes its
-                // children, turning the last child off takes the parent — so
-                // the row that was tapped is rarely the only row that moved,
-                // and guessing which others did is how a screen starts lying.
+                // A full reload: the server cascades switches, so the row that
+                // was tapped is rarely the only one that moved.
                 is ApiResult.Success -> refresh()
                 is ApiResult.Failure -> _uiState.update {
                     it.copy(actionError = result.message)
@@ -272,6 +301,16 @@ class CategoryListViewModel(
     fun onDismissActionError() {
         _uiState.update { it.copy(actionError = null) }
     }
+
+    private fun CategoryListUiState.withFreshDraft(request: AddRequest) = copy(
+        addRequest = request,
+        newName = "",
+        makeGlobal = false,
+        wantsSubcategories = false,
+        subcategoryDraft = "",
+        subcategoryNames = emptyList(),
+        createError = null,
+    )
 
     companion object {
         fun factory(trackerId: Int, repository: CategoryRepository) = viewModelFactory {

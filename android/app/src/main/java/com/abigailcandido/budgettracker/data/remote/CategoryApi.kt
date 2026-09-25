@@ -34,6 +34,7 @@ class CategoryApi(private val client: HttpClient = ApiClient.httpClient) {
         parentId: Int?,
         mainTrackerId: Int?,
         trackerIds: List<Int>?,
+        subcategoryNames: List<String>?,
     ): ApiResult<CategoryResponse> =
         callReturningBody("Could not add the category") {
             client.post("categories") {
@@ -44,6 +45,7 @@ class CategoryApi(private val client: HttpClient = ApiClient.httpClient) {
                         parentId = parentId,
                         mainTrackerId = mainTrackerId,
                         trackerIds = trackerIds,
+                        subcategoryNames = subcategoryNames,
                     )
                 )
             }

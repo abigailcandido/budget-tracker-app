@@ -24,6 +24,7 @@ class CategoryRepository(
     suspend fun createGlobal(
         name: String,
         trackerIds: List<Int>?,
+        subcategoryNames: List<String> = emptyList(),
     ): ApiResult<CategoryResponse> =
         tokenStore.withToken { token ->
             api.create(
@@ -32,6 +33,7 @@ class CategoryRepository(
                 parentId = null,
                 mainTrackerId = null,
                 trackerIds = trackerIds,
+                subcategoryNames = subcategoryNames.takeIf { it.isNotEmpty() },
             )
         }
 
@@ -39,6 +41,7 @@ class CategoryRepository(
     suspend fun createPrivate(
         name: String,
         trackerId: Int,
+        subcategoryNames: List<String> = emptyList(),
     ): ApiResult<CategoryResponse> =
         tokenStore.withToken { token ->
             api.create(
@@ -47,6 +50,7 @@ class CategoryRepository(
                 parentId = null,
                 mainTrackerId = trackerId,
                 trackerIds = null,
+                subcategoryNames = subcategoryNames.takeIf { it.isNotEmpty() },
             )
         }
 
@@ -62,6 +66,7 @@ class CategoryRepository(
                 parentId = parentId,
                 mainTrackerId = null,
                 trackerIds = null,
+                subcategoryNames = null,
             )
         }
 
@@ -71,9 +76,6 @@ class CategoryRepository(
     suspend fun delete(categoryId: Int): ApiResult<Unit> =
         tokenStore.withToken { token -> api.delete(token, categoryId) }
 
-    // The screen thinks in terms of "this switch is on or off", so the
-    // repository is where that collapses into the right verb. Leaving this
-    // decision to the ViewModel would leak an HTTP detail into UI logic.
     suspend fun setEnabled(
         trackerId: Int,
         categoryId: Int,

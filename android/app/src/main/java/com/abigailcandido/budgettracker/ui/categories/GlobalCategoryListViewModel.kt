@@ -21,6 +21,9 @@ data class GlobalCategoryListUiState(
     val errorMessage: String? = null,
     val addRequest: AddRequest? = null,
     val newName: String = "",
+    val wantsSubcategories: Boolean = false,
+    val subcategoryDraft: String = "",
+    val subcategoryNames: List<String> = emptyList(),
     val isCreating: Boolean = false,
     val createError: String? = null,
     val pendingDeleteId: Int? = null,
@@ -41,7 +44,6 @@ data class GlobalCategoryListUiState(
             .filter { it.parentId != null }
             .groupBy { it.parentId!! }
 
-    /** Names only need to differ from their siblings, so the check is scoped. */
     val blockingDuplicate: CategoryResponse?
         get() {
             if (trimmedName.isEmpty()) return null
@@ -63,8 +65,6 @@ data class GlobalCategoryListUiState(
         get() = !isCreating &&
                 trimmedName.isNotEmpty() &&
                 blockingDuplicate == null &&
-                // Only a top-level add waits on the tracker list. A subcategory
-                // takes its parent's switches, so there is nothing to pick.
                 !(addRequest is AddRequest.TopLevel && isLoadingTrackers)
 }
 
@@ -86,9 +86,6 @@ class GlobalCategoryListViewModel(
 
             when (val result = repository.listAll()) {
                 is ApiResult.Success -> _uiState.update {
-                    // This screen is the shared list only. Categories private
-                    // to a tracker are managed inside that tracker, where
-                    // there's a switch to go with them.
                     it.copy(
                         isLoading = false,
                         categories = result.data.filter { item -> item.isGlobal },
@@ -115,10 +112,7 @@ class GlobalCategoryListViewModel(
 
     fun onAddTopLevelClick() {
         _uiState.update {
-            it.copy(
-                addRequest = AddRequest.TopLevel,
-                newName = "",
-                createError = null,
+            it.withFreshDraft(AddRequest.TopLevel).copy(
                 isLoadingTrackers = true,
                 trackers = emptyList(),
                 selectedTrackerIds = null,
@@ -143,14 +137,12 @@ class GlobalCategoryListViewModel(
 
     fun onAddSubcategoryClick(parent: CategoryResponse) {
         _uiState.update {
-            it.copy(
-                addRequest = AddRequest.Subcategory(
+            it.withFreshDraft(
+                AddRequest.Subcategory(
                     parentId = parent.id,
                     parentName = parent.name,
                     parentIsGlobal = true,
-                ),
-                newName = "",
-                createError = null,
+                )
             )
         }
     }
@@ -177,10 +169,37 @@ class GlobalCategoryListViewModel(
         }
     }
 
+    fun onWantsSubcategoriesChange(value: Boolean) {
+        _uiState.update { it.copy(wantsSubcategories = value) }
+    }
+
+    fun onSubcategoryDraftChange(value: String) {
+        _uiState.update { it.copy(subcategoryDraft = value) }
+    }
+
+    fun onAddSubcategoryName() {
+        _uiState.update {
+            it.copy(
+                subcategoryNames = it.subcategoryNames.withSubcategory(it.subcategoryDraft),
+                subcategoryDraft = "",
+            )
+        }
+    }
+
+    fun onRemoveSubcategoryName(name: String) {
+        _uiState.update { it.copy(subcategoryNames = it.subcategoryNames - name) }
+    }
+
     fun submitAdd() {
         val current = _uiState.value
         val request = current.addRequest ?: return
         if (!current.canSubmit) return
+
+        val subcategories = subcategoriesToSend(
+            current.wantsSubcategories,
+            current.subcategoryNames,
+            current.subcategoryDraft,
+        )
 
         viewModelScope.launch {
             _uiState.update { it.copy(isCreating = true, createError = null) }
@@ -191,11 +210,17 @@ class GlobalCategoryListViewModel(
                 repository.createGlobal(
                     name = current.newName,
                     trackerIds = current.selectedTrackerIds?.toList(),
+                    subcategoryNames = subcategories,
                 )
             }
 
             when (result) {
                 is ApiResult.Success -> {
+                    val openId = when {
+                        request is AddRequest.Subcategory -> request.parentId
+                        subcategories.isNotEmpty() -> result.data.id
+                        else -> null
+                    }
                     _uiState.update {
                         it.copy(
                             isCreating = false,
@@ -203,8 +228,8 @@ class GlobalCategoryListViewModel(
                             newName = "",
                             trackers = emptyList(),
                             selectedTrackerIds = null,
-                            expandedParentIds = if (request is AddRequest.Subcategory) {
-                                it.expandedParentIds + request.parentId
+                            expandedParentIds = if (openId != null) {
+                                it.expandedParentIds + openId
                             } else {
                                 it.expandedParentIds
                             },
@@ -245,6 +270,15 @@ class GlobalCategoryListViewModel(
     fun onDismissActionError() {
         _uiState.update { it.copy(actionError = null) }
     }
+
+    private fun GlobalCategoryListUiState.withFreshDraft(request: AddRequest) = copy(
+        addRequest = request,
+        newName = "",
+        wantsSubcategories = false,
+        subcategoryDraft = "",
+        subcategoryNames = emptyList(),
+        createError = null,
+    )
 
     companion object {
         fun factory(

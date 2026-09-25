@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -45,6 +47,11 @@ fun CategoryListScreen(
     onAddSubcategoryClick: (TrackerCategoryResponse) -> Unit,
     onToggleExpanded: (Int) -> Unit,
     onNewNameChange: (String) -> Unit,
+    onMakeGlobalChange: (Boolean) -> Unit,
+    onWantsSubcategoriesChange: (Boolean) -> Unit,
+    onSubcategoryDraftChange: (String) -> Unit,
+    onAddSubcategoryName: () -> Unit,
+    onRemoveSubcategoryName: (String) -> Unit,
     onSubmitAdd: () -> Unit,
     onDismissAdd: () -> Unit,
     onEnabledChange: (Int, Boolean) -> Unit,
@@ -68,7 +75,7 @@ fun CategoryListScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onAddTopLevelClick,
-                text = { Text("Add customized category") },
+                text = { Text("Add category") },
                 icon = {},
             )
         },
@@ -92,8 +99,8 @@ fun CategoryListScreen(
                 Text("No categories yet", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Add one here for this tracker only, or add a shared " +
-                            "one from the Categories tab on the home screen.",
+                    text = "Add one for this tracker only, or share it with " +
+                            "every tracker.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -139,8 +146,14 @@ fun CategoryListScreen(
 
     if (state.addRequest != null) {
         AddCategoryDialog(
+            trackerName = trackerName,
             state = state,
             onNewNameChange = onNewNameChange,
+            onMakeGlobalChange = onMakeGlobalChange,
+            onWantsSubcategoriesChange = onWantsSubcategoriesChange,
+            onSubcategoryDraftChange = onSubcategoryDraftChange,
+            onAddSubcategoryName = onAddSubcategoryName,
+            onRemoveSubcategoryName = onRemoveSubcategoryName,
             onSubmit = onSubmitAdd,
             onDismiss = onDismissAdd,
         )
@@ -192,8 +205,14 @@ fun CategoryListScreen(
 
 @Composable
 private fun AddCategoryDialog(
+    trackerName: String,
     state: CategoryListUiState,
     onNewNameChange: (String) -> Unit,
+    onMakeGlobalChange: (Boolean) -> Unit,
+    onWantsSubcategoriesChange: (Boolean) -> Unit,
+    onSubcategoryDraftChange: (String) -> Unit,
+    onAddSubcategoryName: () -> Unit,
+    onRemoveSubcategoryName: (String) -> Unit,
     onSubmit: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -206,13 +225,18 @@ private fun AddCategoryDialog(
         title = {
             Text(
                 when (request) {
-                    is AddRequest.TopLevel -> "Add customized category"
+                    is AddRequest.TopLevel -> "Add category"
                     is AddRequest.Subcategory -> "Add under ${request.parentName}"
                 }
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                // The dialog can grow with every subcategory added, so its
+                // content scrolls rather than pushing the buttons off screen.
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 OutlinedTextField(
                     value = state.newName,
                     onValueChange = onNewNameChange,
@@ -237,9 +261,49 @@ private fun AddCategoryDialog(
                         text = "\"${existing.name}\" already exists as a shared " +
                                 "category. Rather than creating a second one with " +
                                 "the same name, this will switch the existing one " +
-                                "on for this tracker.",
+                                "on for $trackerName. To give it subcategories, " +
+                                "use Add subcategory on its card.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
+                    )
+                } else if (request is AddRequest.TopLevel) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Share with every tracker",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                text = if (state.makeGlobal) {
+                                    "Other trackers will see it, switched off " +
+                                            "until they turn it on."
+                                } else {
+                                    "Only $trackerName will see it."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = state.makeGlobal,
+                            onCheckedChange = onMakeGlobalChange,
+                            enabled = !state.isCreating,
+                        )
+                    }
+
+                    SubcategoryDraftEditor(
+                        wantsSubcategories = state.wantsSubcategories,
+                        draft = state.subcategoryDraft,
+                        names = state.subcategoryNames,
+                        enabled = !state.isCreating,
+                        onWantsSubcategoriesChange = onWantsSubcategoriesChange,
+                        onDraftChange = onSubcategoryDraftChange,
+                        onAdd = onAddSubcategoryName,
+                        onRemove = onRemoveSubcategoryName,
                     )
                 }
 
@@ -295,8 +359,6 @@ private fun CategoryFamilyCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                // Grows and shrinks smoothly as a group opens, instead of the
-                // rest of the list jumping down by however tall it happens to be.
                 .animateContentSize()
                 .padding(top = 12.dp, bottom = 4.dp),
         ) {

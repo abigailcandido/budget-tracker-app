@@ -303,6 +303,52 @@ def main() -> None:
     status, _ = call("POST", "/categories", token_a, {"name": "Rent"})
     check("a global category cannot reuse a private name", status, 409)
 
+    print("\nCategories created with their subcategories")
+    status, utilities = call(
+        "POST",
+        "/categories",
+        token_a,
+        {
+            "name": "Utilities",
+            "main_tracker_id": two,
+            "subcategory_names": ["Internet", "Mobile"],
+        },
+    )
+    check("create a category together with its subcategories", status, 201)
+    check("it reports having children", (utilities or {}).get("has_children"), True)
+
+    status, rows = call("GET", f"/trackers/{two}/categories", token_a)
+    children = [row for row in (rows or []) if row["parent_id"] == (utilities or {}).get("id")]
+    check("its subcategories sit underneath it", names(children), ["Internet", "Mobile"])
+    check(
+        "the subcategories take the parent's scope and switches",
+        bool(children) and all(row["is_enabled"] and not row["is_global"] for row in children),
+        True,
+    )
+
+    status, _ = call(
+        "POST",
+        "/categories",
+        token_a,
+        {"name": "Phones", "subcategory_names": ["Case", "case"]},
+    )
+    check("repeated subcategory names rejected", status, 422)
+
+    status, rows = call("GET", "/categories", token_a)
+    check(
+        "a rejected request leaves nothing behind",
+        "Phones" in [row["name"] for row in (rows or [])],
+        False,
+    )
+
+    status, _ = call(
+        "POST",
+        "/categories",
+        token_a,
+        {"name": "Solar", "parent_id": bills["id"], "subcategory_names": ["Panels"]},
+    )
+    check("a subcategory cannot be created with subcategories", status, 409)
+
     print("\nWallets")
     status, wallet = call(
         "POST",

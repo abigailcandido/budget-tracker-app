@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +49,10 @@ fun GlobalCategoryListScreen(
     onToggleExpanded: (Int) -> Unit,
     onNewNameChange: (String) -> Unit,
     onTrackerToggle: (Int) -> Unit,
+    onWantsSubcategoriesChange: (Boolean) -> Unit,
+    onSubcategoryDraftChange: (String) -> Unit,
+    onAddSubcategoryName: () -> Unit,
+    onRemoveSubcategoryName: (String) -> Unit,
     onSubmitAdd: () -> Unit,
     onDismissAdd: () -> Unit,
     onDeleteClick: (Int) -> Unit,
@@ -144,6 +147,10 @@ fun GlobalCategoryListScreen(
             state = state,
             onNewNameChange = onNewNameChange,
             onTrackerToggle = onTrackerToggle,
+            onWantsSubcategoriesChange = onWantsSubcategoriesChange,
+            onSubcategoryDraftChange = onSubcategoryDraftChange,
+            onAddSubcategoryName = onAddSubcategoryName,
+            onRemoveSubcategoryName = onRemoveSubcategoryName,
             onSubmit = onSubmitAdd,
             onDismiss = onDismissAdd,
         )
@@ -192,6 +199,10 @@ private fun AddGlobalDialog(
     state: GlobalCategoryListUiState,
     onNewNameChange: (String) -> Unit,
     onTrackerToggle: (Int) -> Unit,
+    onWantsSubcategoriesChange: (Boolean) -> Unit,
+    onSubcategoryDraftChange: (String) -> Unit,
+    onAddSubcategoryName: () -> Unit,
+    onRemoveSubcategoryName: (String) -> Unit,
     onSubmit: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -209,7 +220,10 @@ private fun AddGlobalDialog(
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 OutlinedTextField(
                     value = state.newName,
                     onValueChange = onNewNameChange,
@@ -220,9 +234,6 @@ private fun AddGlobalDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                // Only a top-level category picks its trackers. A subcategory
-                // is switched on wherever its parent already is, so offering a
-                // choice here would be offering something that isn't honoured.
                 if (request is AddRequest.TopLevel) {
                     Text(
                         text = "Switch it on in",
@@ -251,11 +262,9 @@ private fun AddGlobalDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
 
-                        else -> Column(
-                            modifier = Modifier
-                                .heightIn(max = 180.dp)
-                                .verticalScroll(rememberScrollState()),
-                        ) {
+                        // A plain column: the whole dialog already scrolls, and
+                        // a scrolling list inside a scrolling list fights it.
+                        else -> Column {
                             state.trackers.forEach { tracker ->
                                 Row(
                                     modifier = Modifier
@@ -279,11 +288,21 @@ private fun AddGlobalDialog(
                             }
                         }
                     }
-                } else {
+
+                    SubcategoryDraftEditor(
+                        wantsSubcategories = state.wantsSubcategories,
+                        draft = state.subcategoryDraft,
+                        names = state.subcategoryNames,
+                        enabled = !state.isCreating,
+                        onWantsSubcategoriesChange = onWantsSubcategoriesChange,
+                        onDraftChange = onSubcategoryDraftChange,
+                        onAdd = onAddSubcategoryName,
+                        onRemove = onRemoveSubcategoryName,
+                    )
+                } else if (request is AddRequest.Subcategory) {
                     Text(
                         text = "It will be switched on wherever " +
-                                "${(request as AddRequest.Subcategory).parentName} " +
-                                "already is.",
+                                "${request.parentName} already is.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

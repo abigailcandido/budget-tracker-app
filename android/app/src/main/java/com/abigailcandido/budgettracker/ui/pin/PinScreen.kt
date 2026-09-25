@@ -67,7 +67,7 @@ fun PinSetupScreen(
             label = "PIN",
             enabled = !state.isSubmitting,
             isError = state.errorMessage != null,
-            supportingText = "$PIN_MIN_LENGTH to $PIN_MAX_LENGTH digits",
+            supportingText = "$PIN_LENGTH digits",
             imeAction = ImeAction.Next,
         )
 

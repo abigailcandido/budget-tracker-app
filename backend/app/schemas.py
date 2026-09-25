@@ -4,7 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 BCRYPT_MAX_PASSWORD_BYTES = 72
-PIN_PATTERN = r"^\d{4,6}$"
+PIN_PATTERN = r"^\d{6}$"
 CURRENCY_PATTERN = r"^[A-Za-z]{3}$"
 MONEY_MAX_DIGITS = 14
 MONEY_DECIMAL_PLACES = 2
@@ -160,9 +160,38 @@ class CategoryCreateRequest(_NamedRequest):
             "and a subcategory follows its parent."
         ),
     )
+    subcategory_names: list[str] | None = Field(
+        default=None,
+        description=(
+            "Subcategories to create underneath this new category in the same "
+            "request, so the parent and its children appear together or not "
+            "at all. Only valid for a new top-level category."
+        ),
+    )
+
     model_config = ConfigDict(
         json_schema_extra={"example": {"name": "Groceries"}},
     )
+
+    @field_validator("subcategory_names")
+    @classmethod
+    def clean_subcategory_names(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+
+        cleaned = [name.strip() for name in value]
+
+        if any(not name for name in cleaned):
+            raise ValueError("Subcategory names must not be blank")
+
+        if any(len(name) > 255 for name in cleaned):
+            raise ValueError("Subcategory names must be at most 255 characters")
+
+        lowered = [name.lower() for name in cleaned]
+        if len(set(lowered)) != len(lowered):
+            raise ValueError("Each subcategory needs a different name")
+
+        return cleaned
 
 
 class CategoryUpdateRequest(_NamedRequest):

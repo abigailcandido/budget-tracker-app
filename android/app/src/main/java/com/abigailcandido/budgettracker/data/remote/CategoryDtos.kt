@@ -6,13 +6,13 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class CategoryCreateRequest(
     val name: String,
-    // Each of these three is omitted from the JSON when null, because null is
-    // the declared default. That matters: the server reads an absent field as
-    // "the client didn't say" and an explicit empty list as "the user chose
-    // none", and those must not collapse into each other.
+    // Each of these is left out of the JSON when null, because null is the
+    // declared default. The server reads "absent" and "empty" differently for
+    // tracker_ids, so that distinction has to survive the trip.
     @SerialName("parent_id") val parentId: Int? = null,
     @SerialName("main_tracker_id") val mainTrackerId: Int? = null,
     @SerialName("tracker_ids") val trackerIds: List<Int>? = null,
+    @SerialName("subcategory_names") val subcategoryNames: List<String>? = null,
 )
 
 @Serializable

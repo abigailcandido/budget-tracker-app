@@ -71,7 +71,7 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
             when (result) {
                 is ApiResult.Success -> {
                     _uiState.update { it.copy(password = "") }
-                    refreshSession()
+                    refreshSession(justAuthenticated = true)
                 }
                 is ApiResult.Failure -> _uiState.update {
                     it.copy(isSubmitting = false, errorMessage = result.message)
@@ -112,7 +112,7 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
      * repository clears local credentials on a 401 and we fall back to the login
      * screen rather than showing a signed-in UI backed by a dead session.
      */
-    private fun refreshSession() {
+    private fun refreshSession(justAuthenticated: Boolean = false) {
         viewModelScope.launch {
             if (!repository.isSignedIn()) {
                 _uiState.update {
@@ -128,7 +128,10 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
                         isSubmitting = false,
                         isSignedIn = true,
                         hasPin = result.data.hasPin,
-                        isUnlocked = false,
+                        // The password is a stronger proof than the PIN, so someone
+                        // who has just typed it doesn't need to prove themselves again.
+                        // On a cold start there's no password, so the PIN gate applies.
+                        isUnlocked = justAuthenticated,
                     )
                 }
                 is ApiResult.Failure -> _uiState.update {

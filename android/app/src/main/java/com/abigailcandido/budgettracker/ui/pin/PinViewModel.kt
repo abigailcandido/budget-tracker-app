@@ -12,8 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-internal const val PIN_MIN_LENGTH = 4
-internal const val PIN_MAX_LENGTH = 6
+internal const val PIN_LENGTH = 6
 
 data class PinUiState(
     val pin: String = "",
@@ -25,12 +24,12 @@ data class PinUiState(
 ) {
     val canSetPin: Boolean
         get() = !isSubmitting &&
-                pin.length >= PIN_MIN_LENGTH &&
+                pin.length == PIN_LENGTH &&
                 confirmation == pin &&
                 password.isNotBlank()
 
     val canVerifyPin: Boolean
-        get() = !isSubmitting && pin.length >= PIN_MIN_LENGTH
+        get() = !isSubmitting && pin.length == PIN_LENGTH
 }
 
 class PinViewModel(private val repository: AuthRepository) : ViewModel() {
@@ -40,12 +39,12 @@ class PinViewModel(private val repository: AuthRepository) : ViewModel() {
 
     fun onPinChange(value: String) {
         if (!value.all(Char::isDigit)) return
-        _uiState.update { it.copy(pin = value.take(PIN_MAX_LENGTH), errorMessage = null) }
+        _uiState.update { it.copy(pin = value.take(PIN_LENGTH), errorMessage = null) }
     }
 
     fun onConfirmationChange(value: String) {
         if (!value.all(Char::isDigit)) return
-        _uiState.update { it.copy(confirmation = value.take(PIN_MAX_LENGTH), errorMessage = null) }
+        _uiState.update { it.copy(confirmation = value.take(PIN_LENGTH), errorMessage = null) }
     }
 
     fun onPasswordChange(value: String) {
