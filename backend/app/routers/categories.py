@@ -441,7 +441,14 @@ def rename_category(
     db: Session = Depends(get_db),
 ) -> CategoryResponse:
     category = get_owned_category(category_id, user, db)
-    _reject_duplicate_name(payload.name, payload.parent_id, scope_tracker_id, user, db)
+    _reject_duplicate_name(
+        payload.name,
+        category.parent_id,
+        category.main_tracker_id,
+        user,
+        db,
+        exclude_id=category.id,
+    )
 
     category.name = payload.name
     db.commit()
