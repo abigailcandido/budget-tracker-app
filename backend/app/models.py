@@ -77,6 +77,7 @@ class Category(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(255))
+    parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("categories.id"), nullable=True, index=True)
     main_tracker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("main_trackers.id"), nullable=True, index=True)
     savings_tracker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("savings_trackers.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

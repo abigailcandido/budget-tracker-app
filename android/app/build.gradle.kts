@@ -24,7 +24,7 @@ android {
         debug {
             // Your laptop's address on this wifi. Works from both the emulator
             // and the physical phone, as long as both are on the same network.
-            buildConfigField("String", "API_BASE_URL", "\"http://192.168.68.112:8000\"")
+            buildConfigField("String", "API_BASE_URL", "\"https://budget-tracker-api-fpd3.onrender.com\"")
         }
         release {
             optimization {
@@ -51,6 +51,7 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.material.icons.core)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)

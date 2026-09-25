@@ -59,18 +59,54 @@ def create_tracker(
 ) -> TrackerResponse:
     _reject_duplicate_name(payload.name, user, db)
 
+    # Resolve the chosen categories BEFORE creating anything. A bad id should
+    # fail the whole request, not leave a half-configured tracker behind.
+    if payload.category_ids is None:
+        chosen = (
+            db.query(Category)
+            .filter(Category.user_id == user.id, Category.main_tracker_id.is_(None))
+            .all()
+        )
+    elif payload.category_ids:
+        requested_ids = set(payload.category_ids)
+        chosen = (
+            db.query(Category)
+            .filter(
+                Category.user_id == user.id,
+                Category.main_tracker_id.is_(None),
+                Category.id.in_(requested_ids),
+            )
+            .all()
+        )
+        # Catches three problems with one comparison: an id that doesn't exist,
+        # one belonging to another account, and one that is private to a
+        # different tracker. All three are "not yours to use here", and all
+        # three get the same answer so none of them reveals anything.
+        if len(chosen) != len(requested_ids):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="One or more of those categories could not be found",
+            )
+
+        # A subcategory cannot stand on its own. If one was picked, its parent
+        # comes along, otherwise the new tracker gets a child with no heading
+        # above it — reachable by nothing in the picker.
+        parent_ids = {item.parent_id for item in chosen if item.parent_id is not None}
+        if parent_ids:
+            parents = (
+                db.query(Category)
+                .filter(Category.user_id == user.id, Category.id.in_(parent_ids))
+                .all()
+            )
+            chosen = list({item.id: item for item in chosen + parents}.values())
+    else:
+        chosen = []
+
     tracker = MainTracker(user_id=user.id, name=payload.name)
     db.add(tracker)
     db.flush()
 
-    # A new tracker starts with every global category already switched on, so
-    # it is usable immediately rather than arriving with an empty picker.
-    global_categories = (
-        db.query(Category)
-        .filter(Category.user_id == user.id, Category.main_tracker_id.is_(None))
-        .all()
-    )
-    for category in global_categories:
+    for category in chosen:
         db.add(TrackerCategory(category_id=category.id, main_tracker_id=tracker.id))
 
     db.commit()

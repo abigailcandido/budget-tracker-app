@@ -75,7 +75,18 @@ class _NamedRequest(BaseModel):
 
 
 class TrackerCreateRequest(_NamedRequest):
-    pass
+    category_ids: list[int] | None = Field(
+        default=None,
+        description=(
+            "Which global categories this tracker starts with. Leave it out "
+            "entirely to start with all of them. Send an empty list to start "
+            "with none."
+        ),
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"name": "My money"}},
+    )
 
 
 class TrackerUpdateRequest(_NamedRequest):
@@ -122,6 +133,15 @@ class WalletResponse(BaseModel):
 
 
 class CategoryCreateRequest(_NamedRequest):
+    parent_id: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Leave this out for a top-level category. Supply a category id to "
+            "create a subcategory underneath it. A subcategory always takes "
+            "its parent's scope, so main_tracker_id is ignored when this is set."
+        ),
+    )
     main_tracker_id: int | None = Field(
         default=None,
         ge=1,
@@ -130,7 +150,16 @@ class CategoryCreateRequest(_NamedRequest):
             "tracker. Supply a tracker id to make it private to that tracker."
         ),
     )
-
+    tracker_ids: list[int] | None = Field(
+        default=None,
+        description=(
+            "Which trackers this new global category starts switched on in. "
+            "Leave it out to switch it on everywhere; send an empty list to "
+            "switch it on nowhere. Only meaningful for a top-level global "
+            "category — a private one already belongs to a single tracker, "
+            "and a subcategory follows its parent."
+        ),
+    )
     model_config = ConfigDict(
         json_schema_extra={"example": {"name": "Groceries"}},
     )
@@ -139,17 +168,24 @@ class CategoryCreateRequest(_NamedRequest):
 class CategoryUpdateRequest(_NamedRequest):
     """Only the name can change.
 
-    A category's scope is fixed once created. Promoting a private category to
-    global, or demoting the reverse, would change which trackers can see
-    transactions already filed under it — so the honest fix is a new category.
+    Neither a category's scope nor its place in the hierarchy can be edited.
+    Moving a category between parents would silently change which totals every
+    past transaction filed under it contributes to, and reports covering
+    months already closed would quietly start disagreeing with what the user
+    saw at the time.
     """
 
 
 class CategoryResponse(BaseModel):
     id: int
     name: str
+    parent_id: int | None
     main_tracker_id: int | None
     is_global: bool
+    # Whether anything sits underneath this category. The client needs it to
+    # know that this row is a heading rather than something choosable: once a
+    # category has children, transactions must go to one of them.
+    has_children: bool
     created_at: datetime
 
 
@@ -158,5 +194,7 @@ class TrackerCategoryResponse(BaseModel):
 
     id: int
     name: str
+    parent_id: int | None
     is_global: bool
     is_enabled: bool
+    has_children: bool

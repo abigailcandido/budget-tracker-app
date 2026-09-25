@@ -18,7 +18,7 @@ data class WalletNameRequest(
 @Serializable
 data class WalletResponse(
     val id: Int,
-    @SerialName("main_tracker_id") val mainTrackerId: Int,
+    @SerialName("main_tracker_id") val mainTrackerId: Int? = null,
     val name: String,
     val currency: String,
     val balance: String,

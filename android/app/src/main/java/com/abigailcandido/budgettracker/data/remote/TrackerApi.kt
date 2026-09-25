@@ -14,11 +14,15 @@ class TrackerApi(private val client: HttpClient = ApiClient.httpClient) {
             client.get("trackers") { bearer(token) }
         }
 
-    suspend fun create(token: String, name: String): ApiResult<TrackerResponse> =
+    suspend fun create(
+        token: String,
+        name: String,
+        categoryIds: List<Int>?,
+    ): ApiResult<TrackerResponse> =
         callReturningBody("Could not create the tracker") {
             client.post("trackers") {
                 bearer(token)
-                setBody(TrackerNameRequest(name))
+                setBody(TrackerCreateRequest(name = name, categoryIds = categoryIds))
             }
         }
 

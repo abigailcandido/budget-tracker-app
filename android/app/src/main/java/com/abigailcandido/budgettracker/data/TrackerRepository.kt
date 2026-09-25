@@ -13,8 +13,8 @@ class TrackerRepository(
     suspend fun list(): ApiResult<List<TrackerResponse>> =
         tokenStore.withToken { token -> api.list(token) }
 
-    suspend fun create(name: String): ApiResult<TrackerResponse> =
-        tokenStore.withToken { token -> api.create(token, name.trim()) }
+    suspend fun create(name: String, categoryIds: List<Int>?): ApiResult<TrackerResponse> =
+        tokenStore.withToken { token -> api.create(token, name.trim(), categoryIds) }
 
     suspend fun rename(trackerId: Int, name: String): ApiResult<TrackerResponse> =
         tokenStore.withToken { token -> api.rename(token, trackerId, name.trim()) }

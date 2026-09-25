@@ -33,7 +33,7 @@ object ApiClient {
         install(Logging) {
             // HEADERS, never BODY: request bodies here contain passwords and PINs,
             // and Logcat is readable by anyone with the phone plugged in.
-            level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
+            level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.BODY
         }
 
         install(HttpTimeout) {

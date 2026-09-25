@@ -34,6 +34,7 @@ data class WalletListUiState(
     val newOpeningBalance: String = "",
     val isCreating: Boolean = false,
     val createError: String? = null,
+    val pendingDeleteId: Int? = null,
 ) {
     val canCreate: Boolean
         get() = !isCreating &&
@@ -130,8 +131,20 @@ class WalletListViewModel(
         }
     }
 
-    fun deleteWallet(walletId: Int) {
+    fun onDeleteClick(walletId: Int) {
+        _uiState.update { it.copy(pendingDeleteId = walletId) }
+    }
+
+    fun onDismissDelete() {
+        _uiState.update { it.copy(pendingDeleteId = null) }
+    }
+
+    fun confirmDelete() {
+        val walletId = _uiState.value.pendingDeleteId ?: return
+
         viewModelScope.launch {
+            _uiState.update { it.copy(pendingDeleteId = null) }
+
             when (val result = repository.delete(walletId)) {
                 is ApiResult.Success -> refresh()
                 is ApiResult.Failure -> _uiState.update {

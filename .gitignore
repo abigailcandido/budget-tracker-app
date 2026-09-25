@@ -19,3 +19,5 @@ backend/*.egg-info/
 # General
 .DS_Store
 Thumbs.db
+
+_review/

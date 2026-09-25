@@ -22,21 +22,30 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.abigailcandido.budgettracker.data.AuthRepository
+import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.TrackerRepository
 import com.abigailcandido.budgettracker.data.WalletRepository
 import com.abigailcandido.budgettracker.data.local.TokenStore
 import com.abigailcandido.budgettracker.ui.auth.AuthScreen
 import com.abigailcandido.budgettracker.ui.auth.AuthViewModel
+import com.abigailcandido.budgettracker.ui.categories.CategoryListScreen
+import com.abigailcandido.budgettracker.ui.categories.CategoryListViewModel
+import com.abigailcandido.budgettracker.ui.home.HomeScreen
+import com.abigailcandido.budgettracker.ui.navigation.CategoryList
+import com.abigailcandido.budgettracker.ui.navigation.Home
 import com.abigailcandido.budgettracker.ui.navigation.TrackerDetail
-import com.abigailcandido.budgettracker.ui.navigation.TrackerList
 import com.abigailcandido.budgettracker.ui.pin.PinEntryScreen
 import com.abigailcandido.budgettracker.ui.pin.PinSetupScreen
 import com.abigailcandido.budgettracker.ui.pin.PinViewModel
 import com.abigailcandido.budgettracker.ui.theme.BudgetTrackerTheme
-import com.abigailcandido.budgettracker.ui.trackers.TrackerListScreen
-import com.abigailcandido.budgettracker.ui.trackers.TrackerListViewModel
 import com.abigailcandido.budgettracker.ui.wallets.WalletListScreen
 import com.abigailcandido.budgettracker.ui.wallets.WalletListViewModel
+import com.abigailcandido.budgettracker.ui.categories.TrackerPickerScreen
+import com.abigailcandido.budgettracker.ui.categories.TrackerPickerViewModel
+import com.abigailcandido.budgettracker.ui.navigation.GlobalCategories
+import com.abigailcandido.budgettracker.ui.navigation.TrackerPicker
+import com.abigailcandido.budgettracker.ui.categories.GlobalCategoryListViewModel
+import com.abigailcandido.budgettracker.ui.categories.GlobalCategoryListScreen
 
 class MainActivity : ComponentActivity() {
 
@@ -44,6 +53,7 @@ class MainActivity : ComponentActivity() {
     private val authRepository by lazy { AuthRepository(tokenStore) }
     private val trackerRepository by lazy { TrackerRepository(tokenStore) }
     private val walletRepository by lazy { WalletRepository(tokenStore) }
+    private val categoryRepository by lazy { CategoryRepository(tokenStore) }
 
     private val authViewModel: AuthViewModel by viewModels { AuthViewModel.factory(authRepository) }
     private val pinViewModel: PinViewModel by viewModels { PinViewModel.factory(authRepository) }
@@ -111,6 +121,7 @@ class MainActivity : ComponentActivity() {
                     else -> SignedInNavHost(
                         trackerRepository = trackerRepository,
                         walletRepository = walletRepository,
+                        categoryRepository = categoryRepository,
                         onSignOut = signOut,
                     )
                 }
@@ -131,37 +142,66 @@ class MainActivity : ComponentActivity() {
 private fun SignedInNavHost(
     trackerRepository: TrackerRepository,
     walletRepository: WalletRepository,
+    categoryRepository: CategoryRepository,
     onSignOut: () -> Unit,
 ) {
     val navController = rememberNavController()
 
-    NavHost(navController = navController, startDestination = TrackerList) {
+    NavHost(navController = navController, startDestination = Home) {
 
-        composable<TrackerList> {
-            val listViewModel: TrackerListViewModel = viewModel(
-                factory = TrackerListViewModel.factory(trackerRepository),
-            )
-            val listState by listViewModel.uiState.collectAsState()
-
-            TrackerListScreen(
-                state = listState,
-                onOpenTracker = { trackerId ->
-                    // The name is already in hand from the list, so the detail
-                    // screen can show a title without a second request for
-                    // something the user just tapped.
-                    val name = listState.trackers
-                        .firstOrNull { it.id == trackerId }
-                        ?.name
-                        .orEmpty()
-                    navController.navigate(TrackerDetail(trackerId, name))
+        composable<Home> {
+            HomeScreen(
+                trackerRepository = trackerRepository,
+                categoryRepository = categoryRepository,
+                onOpenTracker = { trackerId, trackerName ->
+                    navController.navigate(TrackerDetail(trackerId, trackerName))
                 },
-                onDeleteTracker = listViewModel::deleteTracker,
-                onAddClick = listViewModel::onAddClick,
-                onNewNameChange = listViewModel::onNewNameChange,
-                onConfirmCreate = listViewModel::createTracker,
-                onDismissCreate = listViewModel::onDismissCreate,
-                onRetry = listViewModel::refresh,
+                onOpenGlobalCategories = { navController.navigate(GlobalCategories) },
+                onOpenTrackerCategories = { navController.navigate(TrackerPicker) },
                 onSignOut = onSignOut,
+            )
+        }
+
+        composable<GlobalCategories> {
+            val globalViewModel: GlobalCategoryListViewModel = viewModel(
+                factory = GlobalCategoryListViewModel.factory(
+                    categoryRepository,
+                    trackerRepository,
+                ),
+            )
+            val globalState by globalViewModel.uiState.collectAsState()
+
+            GlobalCategoryListScreen(
+                state = globalState,
+                onBack = { navController.popBackStack() },
+                onAddTopLevelClick = globalViewModel::onAddTopLevelClick,
+                onAddSubcategoryClick = globalViewModel::onAddSubcategoryClick,
+                onToggleExpanded = globalViewModel::onToggleExpanded,
+                onNewNameChange = globalViewModel::onNewNameChange,
+                onTrackerToggle = globalViewModel::onTrackerToggle,
+                onSubmitAdd = globalViewModel::submitAdd,
+                onDismissAdd = globalViewModel::onDismissAdd,
+                onDeleteClick = globalViewModel::onDeleteClick,
+                onConfirmDelete = globalViewModel::confirmDelete,
+                onDismissDelete = globalViewModel::onDismissDelete,
+                onDismissActionError = globalViewModel::onDismissActionError,
+                onRetry = globalViewModel::refresh,
+            )
+        }
+
+        composable<TrackerPicker> {
+            val pickerViewModel: TrackerPickerViewModel = viewModel(
+                factory = TrackerPickerViewModel.factory(trackerRepository),
+            )
+            val pickerState by pickerViewModel.uiState.collectAsState()
+
+            TrackerPickerScreen(
+                state = pickerState,
+                onBack = { navController.popBackStack() },
+                onPickTracker = { trackerId, trackerName ->
+                    navController.navigate(CategoryList(trackerId, trackerName))
+                },
+                onRetry = pickerViewModel::refresh,
             )
         }
 
@@ -177,14 +217,46 @@ private fun SignedInNavHost(
                 trackerName = route.trackerName,
                 state = walletState,
                 onBack = { navController.popBackStack() },
+                onOpenCategories = {
+                    navController.navigate(CategoryList(route.trackerId, route.trackerName))
+                },
                 onAddClick = walletViewModel::onAddClick,
                 onNameChange = walletViewModel::onNameChange,
                 onCurrencyChange = walletViewModel::onCurrencyChange,
                 onOpeningBalanceChange = walletViewModel::onOpeningBalanceChange,
                 onConfirmCreate = walletViewModel::createWallet,
                 onDismissCreate = walletViewModel::onDismissCreate,
-                onDeleteWallet = walletViewModel::deleteWallet,
+                onDeleteClick = walletViewModel::onDeleteClick,
+                onConfirmDelete = walletViewModel::confirmDelete,
+                onDismissDelete = walletViewModel::onDismissDelete,
                 onRetry = walletViewModel::refresh,
+            )
+        }
+
+        composable<CategoryList> { backStackEntry ->
+            val route: CategoryList = backStackEntry.toRoute()
+
+            val categoryViewModel: CategoryListViewModel = viewModel(
+                factory = CategoryListViewModel.factory(route.trackerId, categoryRepository),
+            )
+            val categoryState by categoryViewModel.uiState.collectAsState()
+
+            CategoryListScreen(
+                trackerName = route.trackerName,
+                state = categoryState,
+                onBack = { navController.popBackStack() },
+                onAddTopLevelClick = categoryViewModel::onAddTopLevelClick,
+                onAddSubcategoryClick = categoryViewModel::onAddSubcategoryClick,
+                onToggleExpanded = categoryViewModel::onToggleExpanded,
+                onNewNameChange = categoryViewModel::onNewNameChange,
+                onSubmitAdd = categoryViewModel::submitAdd,
+                onDismissAdd = categoryViewModel::onDismissAdd,
+                onEnabledChange = categoryViewModel::onEnabledChange,
+                onDeleteClick = categoryViewModel::onDeleteClick,
+                onConfirmDelete = categoryViewModel::confirmDelete,
+                onDismissDelete = categoryViewModel::onDismissDelete,
+                onDismissActionError = categoryViewModel::onDismissActionError,
+                onRetry = categoryViewModel::refresh,
             )
         }
     }

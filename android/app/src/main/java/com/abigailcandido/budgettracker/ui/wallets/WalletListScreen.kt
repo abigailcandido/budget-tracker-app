@@ -38,13 +38,16 @@ fun WalletListScreen(
     trackerName: String,
     state: WalletListUiState,
     onBack: () -> Unit,
+    onOpenCategories: () -> Unit,
     onAddClick: () -> Unit,
     onNameChange: (String) -> Unit,
     onCurrencyChange: (String) -> Unit,
     onOpeningBalanceChange: (String) -> Unit,
     onConfirmCreate: () -> Unit,
     onDismissCreate: () -> Unit,
-    onDeleteWallet: (Int) -> Unit,
+    onDeleteClick: (Int) -> Unit,
+    onConfirmDelete: () -> Unit,
+    onDismissDelete: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -55,6 +58,9 @@ fun WalletListScreen(
                 title = { Text(trackerName) },
                 navigationIcon = {
                     TextButton(onClick = onBack) { Text("Back") }
+                },
+                actions = {
+                    TextButton(onClick = onOpenCategories) { Text("Categories") }
                 },
             )
         },
@@ -108,7 +114,7 @@ fun WalletListScreen(
                         name = wallet.name,
                         currency = wallet.currency,
                         balance = wallet.balance,
-                        onDelete = { onDeleteWallet(wallet.id) },
+                        onDelete = { onDeleteClick(wallet.id) },
                     )
                 }
             }
@@ -171,6 +177,32 @@ fun WalletListScreen(
                 TextButton(onClick = onDismissCreate, enabled = !state.isCreating) {
                     Text("Cancel")
                 }
+            },
+        )
+    }
+
+    val pendingDelete = state.wallets.firstOrNull { it.id == state.pendingDeleteId }
+
+    if (pendingDelete != null) {
+        AlertDialog(
+            onDismissRequest = onDismissDelete,
+            title = { Text("Delete ${pendingDelete.name}?") },
+            text = {
+                Text(
+                    if (pendingDelete.balance == "0.00") {
+                        "This removes the wallet permanently."
+                    } else {
+                        "This wallet still holds ${pendingDelete.currency} " +
+                                "${pendingDelete.balance}. Deleting it discards that " +
+                                "balance — the money is not moved anywhere."
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = onConfirmDelete) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissDelete) { Text("Cancel") }
             },
         )
     }
