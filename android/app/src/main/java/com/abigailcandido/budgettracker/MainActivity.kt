@@ -16,6 +16,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.remember
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -30,22 +31,29 @@ import com.abigailcandido.budgettracker.ui.auth.AuthScreen
 import com.abigailcandido.budgettracker.ui.auth.AuthViewModel
 import com.abigailcandido.budgettracker.ui.categories.CategoryListScreen
 import com.abigailcandido.budgettracker.ui.categories.CategoryListViewModel
+import com.abigailcandido.budgettracker.ui.categories.TrackerPickerScreen
+import com.abigailcandido.budgettracker.ui.categories.TrackerPickerViewModel
+import com.abigailcandido.budgettracker.ui.categories.GlobalCategoryListViewModel
+import com.abigailcandido.budgettracker.ui.categories.GlobalCategoryListScreen
+import com.abigailcandido.budgettracker.ui.categories.AddCategoryScreen
+import com.abigailcandido.budgettracker.ui.categories.AddGlobalCategoryScreen
 import com.abigailcandido.budgettracker.ui.home.HomeScreen
 import com.abigailcandido.budgettracker.ui.navigation.CategoryList
 import com.abigailcandido.budgettracker.ui.navigation.Home
 import com.abigailcandido.budgettracker.ui.navigation.TrackerDetail
+import com.abigailcandido.budgettracker.ui.navigation.GlobalCategories
+import com.abigailcandido.budgettracker.ui.navigation.TrackerPicker
+import com.abigailcandido.budgettracker.ui.navigation.CategoryAdd
+import com.abigailcandido.budgettracker.ui.navigation.GlobalCategoryAdd
+import com.abigailcandido.budgettracker.ui.navigation.NewTracker
 import com.abigailcandido.budgettracker.ui.pin.PinEntryScreen
 import com.abigailcandido.budgettracker.ui.pin.PinSetupScreen
 import com.abigailcandido.budgettracker.ui.pin.PinViewModel
 import com.abigailcandido.budgettracker.ui.theme.BudgetTrackerTheme
 import com.abigailcandido.budgettracker.ui.wallets.WalletListScreen
 import com.abigailcandido.budgettracker.ui.wallets.WalletListViewModel
-import com.abigailcandido.budgettracker.ui.categories.TrackerPickerScreen
-import com.abigailcandido.budgettracker.ui.categories.TrackerPickerViewModel
-import com.abigailcandido.budgettracker.ui.navigation.GlobalCategories
-import com.abigailcandido.budgettracker.ui.navigation.TrackerPicker
-import com.abigailcandido.budgettracker.ui.categories.GlobalCategoryListViewModel
-import com.abigailcandido.budgettracker.ui.categories.GlobalCategoryListScreen
+import com.abigailcandido.budgettracker.ui.trackers.NewTrackerScreen
+import com.abigailcandido.budgettracker.ui.trackers.TrackerListViewModel
 
 class MainActivity : ComponentActivity() {
 
@@ -156,9 +164,38 @@ private fun SignedInNavHost(
                 onOpenTracker = { trackerId, trackerName ->
                     navController.navigate(TrackerDetail(trackerId, trackerName))
                 },
+                onOpenNewTracker = { navController.navigate(NewTracker) },
                 onOpenGlobalCategories = { navController.navigate(GlobalCategories) },
                 onOpenTrackerCategories = { navController.navigate(TrackerPicker) },
                 onSignOut = onSignOut,
+            )
+        }
+
+        composable<NewTracker> { entry ->
+            // The page borrows the tracker list's ViewModel instead of having its
+            // own, so creating a tracker updates the very list the user returns to.
+            val homeEntry = remember(entry) { navController.getBackStackEntry<Home>() }
+            val trackerViewModel: TrackerListViewModel = viewModel(
+                viewModelStoreOwner = homeEntry,
+                factory = TrackerListViewModel.factory(trackerRepository, categoryRepository),
+            )
+            val trackerState by trackerViewModel.uiState.collectAsState()
+
+            // `isCreateDialogOpen` now means "the new-tracker form is open". When
+            // the ViewModel closes it — after a successful create, or on Cancel —
+            // the page closes too. Popping by route makes a second call harmless.
+            LaunchedEffect(trackerState.isCreateDialogOpen) {
+                if (!trackerState.isCreateDialogOpen) {
+                    navController.popBackStack<NewTracker>(inclusive = true)
+                }
+            }
+
+            NewTrackerScreen(
+                state = trackerState,
+                onNameChange = trackerViewModel::onNewNameChange,
+                onCategoryToggle = trackerViewModel::onCategoryToggle,
+                onCreate = trackerViewModel::createTracker,
+                onCancel = trackerViewModel::onDismissCreate,
             )
         }
 
@@ -174,22 +211,52 @@ private fun SignedInNavHost(
             GlobalCategoryListScreen(
                 state = globalState,
                 onBack = { navController.popBackStack() },
-                onAddTopLevelClick = globalViewModel::onAddTopLevelClick,
-                onAddSubcategoryClick = globalViewModel::onAddSubcategoryClick,
+                onAddTopLevelClick = {
+                    globalViewModel.onAddTopLevelClick()
+                    navController.navigate(GlobalCategoryAdd)
+                },
+                onAddSubcategoryClick = { parent ->
+                    globalViewModel.onAddSubcategoryClick(parent)
+                    navController.navigate(GlobalCategoryAdd)
+                },
                 onToggleExpanded = globalViewModel::onToggleExpanded,
+                onDeleteClick = globalViewModel::onDeleteClick,
+                onConfirmDelete = globalViewModel::confirmDelete,
+                onDismissDelete = globalViewModel::onDismissDelete,
+                onDismissActionError = globalViewModel::onDismissActionError,
+                onRetry = globalViewModel::refresh,
+            )
+        }
+
+        composable<GlobalCategoryAdd> { entry ->
+            val listEntry = remember(entry) { navController.getBackStackEntry<GlobalCategories>() }
+            val globalViewModel: GlobalCategoryListViewModel = viewModel(
+                viewModelStoreOwner = listEntry,
+                factory = GlobalCategoryListViewModel.factory(
+                    categoryRepository,
+                    trackerRepository,
+                ),
+            )
+            val globalState by globalViewModel.uiState.collectAsState()
+
+            // The ViewModel clears addRequest after a successful create or on
+            // Cancel. Either way the page has nothing left to show, so it closes.
+            LaunchedEffect(globalState.addRequest) {
+                if (globalState.addRequest == null) {
+                    navController.popBackStack<GlobalCategoryAdd>(inclusive = true)
+                }
+            }
+
+            AddGlobalCategoryScreen(
+                state = globalState,
                 onNewNameChange = globalViewModel::onNewNameChange,
                 onTrackerToggle = globalViewModel::onTrackerToggle,
                 onWantsSubcategoriesChange = globalViewModel::onWantsSubcategoriesChange,
                 onSubcategoryDraftChange = globalViewModel::onSubcategoryDraftChange,
                 onAddSubcategoryName = globalViewModel::onAddSubcategoryName,
                 onRemoveSubcategoryName = globalViewModel::onRemoveSubcategoryName,
-                onSubmitAdd = globalViewModel::submitAdd,
-                onDismissAdd = globalViewModel::onDismissAdd,
-                onDeleteClick = globalViewModel::onDeleteClick,
-                onConfirmDelete = globalViewModel::confirmDelete,
-                onDismissDelete = globalViewModel::onDismissDelete,
-                onDismissActionError = globalViewModel::onDismissActionError,
-                onRetry = globalViewModel::refresh,
+                onSubmit = globalViewModel::submitAdd,
+                onCancel = globalViewModel::onDismissAdd,
             )
         }
 
@@ -249,23 +316,50 @@ private fun SignedInNavHost(
                 trackerName = route.trackerName,
                 state = categoryState,
                 onBack = { navController.popBackStack() },
-                onAddTopLevelClick = categoryViewModel::onAddTopLevelClick,
-                onAddSubcategoryClick = categoryViewModel::onAddSubcategoryClick,
+                onAddTopLevelClick = {
+                    categoryViewModel.onAddTopLevelClick()
+                    navController.navigate(CategoryAdd(route.trackerId, route.trackerName))
+                },
+                onAddSubcategoryClick = { parent ->
+                    categoryViewModel.onAddSubcategoryClick(parent)
+                    navController.navigate(CategoryAdd(route.trackerId, route.trackerName))
+                },
                 onToggleExpanded = categoryViewModel::onToggleExpanded,
-                onNewNameChange = categoryViewModel::onNewNameChange,
-                onMakeGlobalChange = categoryViewModel::onMakeGlobalChange,
-                onWantsSubcategoriesChange = categoryViewModel::onWantsSubcategoriesChange,
-                onSubcategoryDraftChange = categoryViewModel::onSubcategoryDraftChange,
-                onAddSubcategoryName = categoryViewModel::onAddSubcategoryName,
-                onRemoveSubcategoryName = categoryViewModel::onRemoveSubcategoryName,
-                onSubmitAdd = categoryViewModel::submitAdd,
-                onDismissAdd = categoryViewModel::onDismissAdd,
                 onEnabledChange = categoryViewModel::onEnabledChange,
                 onDeleteClick = categoryViewModel::onDeleteClick,
                 onConfirmDelete = categoryViewModel::confirmDelete,
                 onDismissDelete = categoryViewModel::onDismissDelete,
                 onDismissActionError = categoryViewModel::onDismissActionError,
                 onRetry = categoryViewModel::refresh,
+            )
+        }
+
+        composable<CategoryAdd> { entry ->
+            val route: CategoryAdd = entry.toRoute()
+            val listEntry = remember(entry) { navController.getBackStackEntry<CategoryList>() }
+            val categoryViewModel: CategoryListViewModel = viewModel(
+                viewModelStoreOwner = listEntry,
+                factory = CategoryListViewModel.factory(route.trackerId, categoryRepository),
+            )
+            val categoryState by categoryViewModel.uiState.collectAsState()
+
+            LaunchedEffect(categoryState.addRequest) {
+                if (categoryState.addRequest == null) {
+                    navController.popBackStack<CategoryAdd>(inclusive = true)
+                }
+            }
+
+            AddCategoryScreen(
+                trackerName = route.trackerName,
+                state = categoryState,
+                onNewNameChange = categoryViewModel::onNewNameChange,
+                onMakeGlobalChange = categoryViewModel::onMakeGlobalChange,
+                onWantsSubcategoriesChange = categoryViewModel::onWantsSubcategoriesChange,
+                onSubcategoryDraftChange = categoryViewModel::onSubcategoryDraftChange,
+                onAddSubcategoryName = categoryViewModel::onAddSubcategoryName,
+                onRemoveSubcategoryName = categoryViewModel::onRemoveSubcategoryName,
+                onSubmit = categoryViewModel::submitAdd,
+                onCancel = categoryViewModel::onDismissAdd,
             )
         }
     }

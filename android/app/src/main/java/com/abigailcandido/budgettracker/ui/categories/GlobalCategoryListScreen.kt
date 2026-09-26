@@ -12,21 +12,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -47,14 +41,6 @@ fun GlobalCategoryListScreen(
     onAddTopLevelClick: () -> Unit,
     onAddSubcategoryClick: (CategoryResponse) -> Unit,
     onToggleExpanded: (Int) -> Unit,
-    onNewNameChange: (String) -> Unit,
-    onTrackerToggle: (Int) -> Unit,
-    onWantsSubcategoriesChange: (Boolean) -> Unit,
-    onSubcategoryDraftChange: (String) -> Unit,
-    onAddSubcategoryName: () -> Unit,
-    onRemoveSubcategoryName: (String) -> Unit,
-    onSubmitAdd: () -> Unit,
-    onDismissAdd: () -> Unit,
     onDeleteClick: (Int) -> Unit,
     onConfirmDelete: () -> Unit,
     onDismissDelete: () -> Unit,
@@ -142,20 +128,6 @@ fun GlobalCategoryListScreen(
         }
     }
 
-    if (state.addRequest != null) {
-        AddGlobalDialog(
-            state = state,
-            onNewNameChange = onNewNameChange,
-            onTrackerToggle = onTrackerToggle,
-            onWantsSubcategoriesChange = onWantsSubcategoriesChange,
-            onSubcategoryDraftChange = onSubcategoryDraftChange,
-            onAddSubcategoryName = onAddSubcategoryName,
-            onRemoveSubcategoryName = onRemoveSubcategoryName,
-            onSubmit = onSubmitAdd,
-            onDismiss = onDismissAdd,
-        )
-    }
-
     val pendingDelete = state.categories.firstOrNull { it.id == state.pendingDeleteId }
 
     if (pendingDelete != null) {
@@ -192,151 +164,6 @@ fun GlobalCategoryListScreen(
             },
         )
     }
-}
-
-@Composable
-private fun AddGlobalDialog(
-    state: GlobalCategoryListUiState,
-    onNewNameChange: (String) -> Unit,
-    onTrackerToggle: (Int) -> Unit,
-    onWantsSubcategoriesChange: (Boolean) -> Unit,
-    onSubcategoryDraftChange: (String) -> Unit,
-    onAddSubcategoryName: () -> Unit,
-    onRemoveSubcategoryName: (String) -> Unit,
-    onSubmit: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val request = state.addRequest ?: return
-    val blocking = state.blockingDuplicate
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                when (request) {
-                    is AddRequest.TopLevel -> "Add global category"
-                    is AddRequest.Subcategory -> "Add under ${request.parentName}"
-                }
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                OutlinedTextField(
-                    value = state.newName,
-                    onValueChange = onNewNameChange,
-                    label = { Text("Name") },
-                    singleLine = true,
-                    enabled = !state.isCreating,
-                    isError = blocking != null || state.createError != null,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                if (request is AddRequest.TopLevel) {
-                    Text(
-                        text = "Switch it on in",
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-
-                    when {
-                        state.isLoadingTrackers -> Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Text(
-                                text = "Loading your trackers…",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-
-                        state.trackers.isEmpty() -> Text(
-                            text = "You have no trackers yet. The category will " +
-                                    "be available to any you create later.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-
-                        // A plain column: the whole dialog already scrolls, and
-                        // a scrolling list inside a scrolling list fights it.
-                        else -> Column {
-                            state.trackers.forEach { tracker ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable(enabled = !state.isCreating) {
-                                            onTrackerToggle(tracker.id)
-                                        },
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Checkbox(
-                                        checked = state.selectedTrackerIds
-                                            ?.contains(tracker.id) == true,
-                                        onCheckedChange = { onTrackerToggle(tracker.id) },
-                                        enabled = !state.isCreating,
-                                    )
-                                    Text(
-                                        text = tracker.name,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    SubcategoryDraftEditor(
-                        wantsSubcategories = state.wantsSubcategories,
-                        draft = state.subcategoryDraft,
-                        names = state.subcategoryNames,
-                        enabled = !state.isCreating,
-                        onWantsSubcategoriesChange = onWantsSubcategoriesChange,
-                        onDraftChange = onSubcategoryDraftChange,
-                        onAdd = onAddSubcategoryName,
-                        onRemove = onRemoveSubcategoryName,
-                    )
-                } else if (request is AddRequest.Subcategory) {
-                    Text(
-                        text = "It will be switched on wherever " +
-                                "${request.parentName} already is.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                if (blocking != null) {
-                    Text(
-                        text = "There's already a category called " +
-                                "\"${blocking.name}\" here.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-
-                if (state.createError != null) {
-                    Text(
-                        text = state.createError,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onSubmit, enabled = state.canSubmit) {
-                Text(if (state.isCreating) "Adding…" else "Add")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !state.isCreating) {
-                Text("Cancel")
-            }
-        },
-    )
 }
 
 @Composable

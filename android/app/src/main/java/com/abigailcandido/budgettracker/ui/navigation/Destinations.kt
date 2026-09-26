@@ -22,3 +22,15 @@ data class CategoryList(
     val trackerId: Int,
     val trackerName: String,
 )
+
+@Serializable
+data object NewTracker
+
+@Serializable
+data object GlobalCategoryAdd
+
+@Serializable
+data class CategoryAdd(
+    val trackerId: Int,
+    val trackerName: String,
+)

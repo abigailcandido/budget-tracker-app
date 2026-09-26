@@ -10,22 +10,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,10 +39,6 @@ fun TrackerListScreen(
     onConfirmDelete: () -> Unit,
     onDismissDelete: () -> Unit,
     onAddClick: () -> Unit,
-    onNewNameChange: (String) -> Unit,
-    onCategoryToggle: (Int) -> Unit,
-    onConfirmCreate: () -> Unit,
-    onDismissCreate: () -> Unit,
     onRetry: () -> Unit,
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier,
@@ -113,6 +102,18 @@ fun TrackerListScreen(
                 ),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // Grouped by kind from the start. Savings trackers get a
+                // section of their own below this one when they arrive, so
+                // the list won't need reorganising then.
+                item {
+                    Text(
+                        text = "Main trackers",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                }
+
                 items(state.trackers, key = { it.id }) { tracker ->
                     TrackerRow(
                         name = tracker.name,
@@ -122,113 +123,6 @@ fun TrackerListScreen(
                 }
             }
         }
-    }
-
-    if (state.isCreateDialogOpen) {
-        AlertDialog(
-            onDismissRequest = onDismissCreate,
-            title = { Text("New tracker") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(
-                        value = state.newName,
-                        onValueChange = onNewNameChange,
-                        label = { Text("Name") },
-                        singleLine = true,
-                        enabled = !state.isCreating,
-                        isError = state.createError != null,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-
-                    Text(
-                        text = "Categories to start with",
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-
-                    when {
-                        state.isLoadingCategories -> Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Text(
-                                text = "Loading your categories…",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-
-                        state.availableCategories.isEmpty() -> Text(
-                            text = "You don't have any categories yet. Create " +
-                                    "the tracker now, then add categories from " +
-                                    "the Categories tab.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-
-                        // A plain scrolling Column rather than a LazyColumn.
-                        // A dialog measures its content with no height limit,
-                        // and a LazyColumn asked how tall it wants to be with
-                        // no limit crashes rather than guessing.
-                        else -> Column(
-                            modifier = Modifier
-                                .heightIn(max = 200.dp)
-                                .verticalScroll(rememberScrollState()),
-                        ) {
-                            state.availableCategories.forEach { category ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable(enabled = !state.isCreating) {
-                                            onCategoryToggle(category.id)
-                                        },
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Checkbox(
-                                        checked = state.selectedCategoryIds
-                                            ?.contains(category.id) == true,
-                                        onCheckedChange = {
-                                            onCategoryToggle(category.id)
-                                        },
-                                        enabled = !state.isCreating,
-                                    )
-                                    Text(
-                                        text = category.name,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Text(
-                        text = "You can change these later from inside the tracker.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-
-                    if (state.createError != null) {
-                        Text(
-                            text = state.createError,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = onConfirmCreate, enabled = state.canCreate) {
-                    Text(if (state.isCreating) "Creating…" else "Create")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismissCreate, enabled = !state.isCreating) {
-                    Text("Cancel")
-                }
-            },
-        )
     }
 
     val pendingDelete = state.trackers.firstOrNull { it.id == state.pendingDeleteId }

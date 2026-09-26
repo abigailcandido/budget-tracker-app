@@ -14,8 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -23,7 +21,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -46,14 +43,6 @@ fun CategoryListScreen(
     onAddTopLevelClick: () -> Unit,
     onAddSubcategoryClick: (TrackerCategoryResponse) -> Unit,
     onToggleExpanded: (Int) -> Unit,
-    onNewNameChange: (String) -> Unit,
-    onMakeGlobalChange: (Boolean) -> Unit,
-    onWantsSubcategoriesChange: (Boolean) -> Unit,
-    onSubcategoryDraftChange: (String) -> Unit,
-    onAddSubcategoryName: () -> Unit,
-    onRemoveSubcategoryName: (String) -> Unit,
-    onSubmitAdd: () -> Unit,
-    onDismissAdd: () -> Unit,
     onEnabledChange: (Int, Boolean) -> Unit,
     onDeleteClick: (Int) -> Unit,
     onConfirmDelete: () -> Unit,
@@ -144,21 +133,6 @@ fun CategoryListScreen(
         }
     }
 
-    if (state.addRequest != null) {
-        AddCategoryDialog(
-            trackerName = trackerName,
-            state = state,
-            onNewNameChange = onNewNameChange,
-            onMakeGlobalChange = onMakeGlobalChange,
-            onWantsSubcategoriesChange = onWantsSubcategoriesChange,
-            onSubcategoryDraftChange = onSubcategoryDraftChange,
-            onAddSubcategoryName = onAddSubcategoryName,
-            onRemoveSubcategoryName = onRemoveSubcategoryName,
-            onSubmit = onSubmitAdd,
-            onDismiss = onDismissAdd,
-        )
-    }
-
     val pendingDelete = state.categories.firstOrNull { it.id == state.pendingDeleteId }
 
     if (pendingDelete != null) {
@@ -201,147 +175,6 @@ fun CategoryListScreen(
             },
         )
     }
-}
-
-@Composable
-private fun AddCategoryDialog(
-    trackerName: String,
-    state: CategoryListUiState,
-    onNewNameChange: (String) -> Unit,
-    onMakeGlobalChange: (Boolean) -> Unit,
-    onWantsSubcategoriesChange: (Boolean) -> Unit,
-    onSubcategoryDraftChange: (String) -> Unit,
-    onAddSubcategoryName: () -> Unit,
-    onRemoveSubcategoryName: (String) -> Unit,
-    onSubmit: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val request = state.addRequest ?: return
-    val existing = state.existingGlobalMatch
-    val blocking = state.blockingDuplicate
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                when (request) {
-                    is AddRequest.TopLevel -> "Add category"
-                    is AddRequest.Subcategory -> "Add under ${request.parentName}"
-                }
-            )
-        },
-        text = {
-            Column(
-                // The dialog can grow with every subcategory added, so its
-                // content scrolls rather than pushing the buttons off screen.
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                OutlinedTextField(
-                    value = state.newName,
-                    onValueChange = onNewNameChange,
-                    label = { Text("Name") },
-                    singleLine = true,
-                    enabled = !state.isCreating,
-                    isError = blocking != null || state.createError != null,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                if (request is AddRequest.Subcategory && request.parentIsGlobal) {
-                    Text(
-                        text = "${request.parentName} is shared across every " +
-                                "tracker, so this subcategory will be too.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                if (existing != null) {
-                    Text(
-                        text = "\"${existing.name}\" already exists as a shared " +
-                                "category. Rather than creating a second one with " +
-                                "the same name, this will switch the existing one " +
-                                "on for $trackerName. To give it subcategories, " +
-                                "use Add subcategory on its card.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                } else if (request is AddRequest.TopLevel) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Share with every tracker",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text(
-                                text = if (state.makeGlobal) {
-                                    "Other trackers will see it, switched off " +
-                                            "until they turn it on."
-                                } else {
-                                    "Only $trackerName will see it."
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = state.makeGlobal,
-                            onCheckedChange = onMakeGlobalChange,
-                            enabled = !state.isCreating,
-                        )
-                    }
-
-                    SubcategoryDraftEditor(
-                        wantsSubcategories = state.wantsSubcategories,
-                        draft = state.subcategoryDraft,
-                        names = state.subcategoryNames,
-                        enabled = !state.isCreating,
-                        onWantsSubcategoriesChange = onWantsSubcategoriesChange,
-                        onDraftChange = onSubcategoryDraftChange,
-                        onAdd = onAddSubcategoryName,
-                        onRemove = onRemoveSubcategoryName,
-                    )
-                }
-
-                if (blocking != null) {
-                    Text(
-                        text = "You already have a category called " +
-                                "\"${blocking.name}\" here.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-
-                if (state.createError != null) {
-                    Text(
-                        text = state.createError,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onSubmit, enabled = state.canSubmit) {
-                Text(
-                    when {
-                        state.isCreating -> "Working…"
-                        existing != null -> "Switch it on"
-                        else -> "Add"
-                    }
-                )
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !state.isCreating) {
-                Text("Cancel")
-            }
-        },
-    )
 }
 
 @Composable

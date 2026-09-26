@@ -113,13 +113,25 @@ class TrackerListViewModel(
     fun onCategoryToggle(categoryId: Int) {
         _uiState.update { current ->
             val selected = current.selectedCategoryIds ?: return@update current
-            current.copy(
-                selectedCategoryIds = if (categoryId in selected) {
-                    selected - categoryId
-                } else {
-                    selected + categoryId
-                },
-            )
+            val all = current.availableCategories
+            val category = all.firstOrNull { it.id == categoryId } ?: return@update current
+            val parentId = category.parentId
+            val turningOn = categoryId !in selected
+
+            // Mirrors the switch rules on the category screens, so a tracker can
+            // never start life with a heading that has nothing under it to pick.
+            val updated = if (parentId == null) {
+                val childIds = all.filter { it.parentId == categoryId }.map { it.id }.toSet()
+                if (turningOn) selected + categoryId + childIds else selected - categoryId - childIds
+            } else if (turningOn) {
+                selected + categoryId + parentId
+            } else {
+                val remaining = selected - categoryId
+                val siblingStillOn = all.any { it.parentId == parentId && it.id in remaining }
+                if (siblingStillOn) remaining else remaining - parentId
+            }
+
+            current.copy(selectedCategoryIds = updated)
         }
     }
 

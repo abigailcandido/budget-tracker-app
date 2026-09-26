@@ -9,27 +9,25 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.TrackerRepository
+import com.abigailcandido.budgettracker.ui.categories.CategoryHubScreen
 import com.abigailcandido.budgettracker.ui.trackers.TrackerListScreen
 import com.abigailcandido.budgettracker.ui.trackers.TrackerListViewModel
-import com.abigailcandido.budgettracker.ui.categories.CategoryHubScreen
 
 /**
  * The two top-level tabs.
  *
  * These are deliberately NOT navigation destinations. Bottom-bar tabs are
- * meant to be siblings you flick between, not a trail you back out of — if
- * they were destinations, the system back button would walk backwards through
- * every tab you'd visited, which is not what anyone expects of a bottom bar.
+ * siblings you flick between, not a trail you back out of.
  *
- * The tracker list's ViewModel survives the switch: `viewModel()` stores it
- * against this screen's back stack entry, so leaving the tab and coming back
- * finds the same instance with its list already loaded.
+ * The tracker list's ViewModel lives on this screen's back stack entry, which
+ * is also how the New tracker page reaches the very same instance.
  */
 @Composable
 fun HomeScreen(
     trackerRepository: TrackerRepository,
     categoryRepository: CategoryRepository,
     onOpenTracker: (Int, String) -> Unit,
+    onOpenNewTracker: () -> Unit,
     onOpenGlobalCategories: () -> Unit,
     onOpenTrackerCategories: () -> Unit,
     onSignOut: () -> Unit,
@@ -63,11 +61,12 @@ fun HomeScreen(
                 onDeleteClick = viewModel::onDeleteClick,
                 onConfirmDelete = viewModel::confirmDelete,
                 onDismissDelete = viewModel::onDismissDelete,
-                onAddClick = viewModel::onAddClick,
-                onNewNameChange = viewModel::onNewNameChange,
-                onCategoryToggle = viewModel::onCategoryToggle,
-                onConfirmCreate = viewModel::createTracker,
-                onDismissCreate = viewModel::onDismissCreate,
+                onAddClick = {
+                    // Prepare the form first — this starts loading the category
+                    // list — then open the page that shows it.
+                    viewModel.onAddClick()
+                    onOpenNewTracker()
+                },
                 onRetry = viewModel::refresh,
                 onSignOut = onSignOut,
             )
