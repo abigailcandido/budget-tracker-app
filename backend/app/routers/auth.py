@@ -1,10 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
+from app.mailer import send_email
 from app.models import User
+from app.reset_links import (
+    PASSWORD_RESET,
+    PIN_RESET,
+    is_rate_limited,
+    issue_link,
+    redeem_link,
+)
 from app.schemas import (
     LoginRequest,
+    MessageResponse,
+    PasswordResetEmailRequest,
+    PasswordResetRequest,
+    PinResetRequest,
     RegisterRequest,
     SetPinRequest,
     TokenResponse,
@@ -19,6 +31,9 @@ from app.security import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+INVALID_LINK = "This link is invalid, has expired or has already been used. Ask for a new one from the app."
+PASSWORD_LINK_SENT = "If an account uses that email, a link to reset its password is on its way."
 
 
 def _start_session(db: Session, user: User) -> str:
@@ -111,6 +126,7 @@ def read_current_user(user: User = Depends(get_current_user)) -> UserResponse:
 )
 def set_pin(
     payload: SetPinRequest,
+    background: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
@@ -123,8 +139,13 @@ def set_pin(
             detail="Incorrect password",
         )
 
+    had_pin = user.hashed_pin is not None
     user.hashed_pin = hash_password(payload.pin)
     db.commit()
+
+    # Choosing a PIN for the first time is not worth an email; replacing one is.
+    if had_pin:
+        background.add_task(_send_change_notice, user.email, "PIN")
 
 
 @router.post(
@@ -147,3 +168,125 @@ def verify_pin(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Incorrect PIN",
         )
+
+
+@router.post(
+    "/pin/reset-request",
+    response_model=MessageResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Email a link for choosing a new PIN",
+)
+def request_pin_reset(
+    background: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    # The phone must still hold a valid session, so the link can only ever go
+    # to the address of the account that is signed in on it.
+    if is_rate_limited(db, user, PIN_RESET):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="A link was sent a moment ago. Check your inbox, or wait a minute and try again.",
+        )
+
+    link = issue_link(db, user, PIN_RESET)
+    background.add_task(
+        send_email,
+        user.email,
+        "Reset your Budget Tracker PIN",
+        _link_email_text("PIN", link),
+    )
+    return MessageResponse(detail=f"A link is on its way to {user.email}. It expires in 30 minutes.")
+
+
+@router.post(
+    "/password/reset-request",
+    response_model=MessageResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Email a link for choosing a new password",
+)
+def request_password_reset(
+    payload: PasswordResetEmailRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    email = payload.email.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+
+    # Every outcome gives the same answer, and the email itself is sent after
+    # the response has gone, so neither the reply nor its timing reveals
+    # whether an account uses this address.
+    if user is not None and not is_rate_limited(db, user, PASSWORD_RESET):
+        link = issue_link(db, user, PASSWORD_RESET)
+        background.add_task(
+            send_email,
+            user.email,
+            "Reset your Budget Tracker password",
+            _link_email_text("password", link),
+        )
+
+    return MessageResponse(detail=PASSWORD_LINK_SENT)
+
+
+@router.post(
+    "/pin/reset",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Choose a new PIN using an emailed link",
+)
+def reset_pin(
+    payload: PinResetRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> None:
+    user = redeem_link(db, payload.token, PIN_RESET)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=INVALID_LINK)
+
+    user.hashed_pin = hash_password(payload.pin)
+    db.commit()
+    background.add_task(_send_change_notice, user.email, "PIN")
+
+
+@router.post(
+    "/password/reset",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Choose a new password using an emailed link",
+)
+def reset_password(
+    payload: PasswordResetRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> None:
+    user = redeem_link(db, payload.token, PASSWORD_RESET)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=INVALID_LINK)
+
+    user.hashed_password = hash_password(payload.password)
+    # Whoever held the old password may be signed in on a phone right now.
+    # Ending the session means the new password is needed to get back in.
+    user.current_session_token = None
+    db.commit()
+    background.add_task(_send_change_notice, user.email, "password")
+
+
+def _link_email_text(what: str, link: str) -> str:
+    return (
+        f"Someone, hopefully you, asked to reset the {what} for your Budget Tracker account.\n\n"
+        f"Open this link to choose a new {what}. It works once and expires in 30 minutes:\n\n"
+        f"{link}\n\n"
+        f"If you did not ask for this, ignore this email. Your {what} stays the same."
+    )
+
+
+def _send_change_notice(email: str, what: str) -> None:
+    send_email(
+        email,
+        f"Your Budget Tracker {what} was changed",
+        (
+            f"The {what} for your Budget Tracker account was just changed.\n\n"
+            "If this was you, there is nothing more to do.\n\n"
+            "If it was not, someone may have access to this email account. "
+            "Change your email password first, then reset your Budget Tracker "
+            "password from the app's sign-in screen."
+        ),
+    )

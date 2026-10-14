@@ -15,8 +15,9 @@ def format_money(value: Decimal) -> str:
     return f"{value:.2f}"
 
 
-class RegisterRequest(BaseModel):
-    email: EmailStr
+class _NewPasswordRequest(BaseModel):
+    """Shared rules for any request that chooses a new password."""
+
     password: str = Field(min_length=8, max_length=BCRYPT_MAX_PASSWORD_BYTES)
 
     @field_validator("password")
@@ -27,6 +28,10 @@ class RegisterRequest(BaseModel):
                 f"Password must be at most {BCRYPT_MAX_PASSWORD_BYTES} bytes long"
             )
         return value
+
+
+class RegisterRequest(_NewPasswordRequest):
+    email: EmailStr
 
 
 class LoginRequest(BaseModel):
@@ -53,6 +58,23 @@ class SetPinRequest(BaseModel):
 
 class VerifyPinRequest(BaseModel):
     pin: str = Field(pattern=PIN_PATTERN)
+
+
+class PasswordResetEmailRequest(BaseModel):
+    email: EmailStr
+
+
+class PinResetRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+    pin: str = Field(pattern=PIN_PATTERN)
+
+
+class PasswordResetRequest(_NewPasswordRequest):
+    token: str = Field(min_length=1, max_length=200)
+
+
+class MessageResponse(BaseModel):
+    detail: str
 
 
 class _NamedRequest(BaseModel):

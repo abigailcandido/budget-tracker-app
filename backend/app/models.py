@@ -143,3 +143,22 @@ class ExchangeRate(Base):
     target_currency: Mapped[str] = mapped_column(String(3), unique=True)
     rate_to_php: Mapped[Decimal] = mapped_column(Numeric(12, 6))
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuthToken(Base):
+    """A single-use link sent by email, such as a PIN or password reset.
+
+    Only the SHA-256 hash of the token is stored, the same way session tokens
+    are, so someone reading this table cannot use what they find to reset
+    anybody's PIN or password.
+    """
+
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    purpose: Mapped[str] = mapped_column(String(30))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

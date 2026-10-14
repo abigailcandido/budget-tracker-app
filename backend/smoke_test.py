@@ -48,6 +48,13 @@ def call(method: str, path: str, token: str | None = None, body: dict | None = N
         print(f"Could not reach {BASE_URL} — is the server running? ({error.reason})")
         sys.exit(1)
 
+def fetch_page(path: str):
+    """Load a web page and return (status_code, headers, text)."""
+    try:
+        with urllib.request.urlopen(f"{BASE_URL}{path}") as response:
+            return response.status, response.headers, response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers, ""
 
 def check(description: str, actual, expected) -> None:
     if actual == expected:
@@ -100,6 +107,57 @@ def main() -> None:
         body={"email": f"smoke-{stamp}-c@example.com", "password": "short"},
     )
     check("short password rejected", status, 422)
+
+    print("\nReset links")
+    # The links themselves only ever reach an inbox (or, with no email key set,
+    # the server window), so these checks cover everything around them.
+    status, _ = call("POST", "/auth/pin/reset-request", token_a)
+    check("ask for a PIN reset link", status, 202)
+
+    status, _ = call("POST", "/auth/pin/reset-request", token_a)
+    check("asking again straight away is refused", status, 429)
+
+    status, _ = call("POST", "/auth/pin/reset-request")
+    check("a PIN reset link needs a signed-in phone", status, 401)
+
+    status, known = call(
+        "POST",
+        "/auth/password/reset-request",
+        body={"email": f"smoke-{stamp}-a@example.com"},
+    )
+    check("ask for a password reset link", status, 202)
+
+    status, unknown = call(
+        "POST",
+        "/auth/password/reset-request",
+        body={"email": f"smoke-{stamp}-nobody@example.com"},
+    )
+    check("an unknown email gets the same status", status, 202)
+    check("and the same message, revealing nothing", unknown, known)
+
+    status, _ = call(
+        "POST", "/auth/pin/reset", body={"token": "not-a-real-link", "pin": "123456"}
+    )
+    check("a made-up PIN link is refused", status, 400)
+
+    status, _ = call(
+        "POST", "/auth/pin/reset", body={"token": "not-a-real-link", "pin": "12345"}
+    )
+    check("a new PIN must be 6 digits", status, 422)
+
+    status, _ = call(
+        "POST",
+        "/auth/password/reset",
+        body={"token": "not-a-real-link", "password": "testing67890"},
+    )
+    check("a made-up password link is refused", status, 400)
+
+    status, headers, _ = fetch_page("/reset/pin")
+    check("the PIN reset page loads", status, 200)
+    check("the page never passes its address on", headers.get("Referrer-Policy"), "no-referrer")
+
+    status, _, _ = fetch_page("/reset/password")
+    check("the password reset page loads", status, 200)
 
     print("\nTrackers")
     status, tracker_one = call("POST", "/trackers", token_a, {"name": "Tracker One"})
