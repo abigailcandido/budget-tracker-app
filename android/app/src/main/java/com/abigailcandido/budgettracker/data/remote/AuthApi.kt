@@ -46,4 +46,16 @@ class AuthApi(private val client: HttpClient = ApiClient.httpClient) {
                 setBody(VerifyPinRequest(pin = pin))
             }
         }
+        
+    suspend fun requestPinReset(token: String): ApiResult<MessageResponse> =
+        callReturningBody("Could not send the reset link") {
+            client.post("auth/pin/reset-request") { bearer(token) }
+        }
+
+    suspend fun requestPasswordReset(email: String): ApiResult<MessageResponse> =
+        callReturningBody("Could not send the reset link") {
+            client.post("auth/password/reset-request") {
+                setBody(PasswordResetEmailRequest(email = email))
+            }
+        }
 }

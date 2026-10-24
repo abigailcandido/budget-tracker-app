@@ -126,6 +126,7 @@ fun PinEntryScreen(
     state: PinUiState,
     onPinChange: (String) -> Unit,
     onSubmit: () -> Unit,
+    onRequestResetLink: () -> Unit,
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -163,6 +164,16 @@ fun PinEntryScreen(
 
         ErrorText(state.errorMessage)
 
+        if (state.notice != null) {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = state.notice,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
         Spacer(Modifier.height(24.dp))
 
         SubmitButton(
@@ -174,8 +185,18 @@ fun PinEntryScreen(
 
         Spacer(Modifier.height(8.dp))
 
+        TextButton(onClick = onRequestResetLink, enabled = state.canRequestLink) {
+            Text(
+                if (state.isSendingLink) {
+                    "Sending a reset link…"
+                } else {
+                    "Forgot your PIN? Email me a reset link"
+                }
+            )
+        }
+
         TextButton(onClick = onSignOut, enabled = !state.isSubmitting) {
-            Text("Forgot your PIN? Sign out")
+            Text("Sign out")
         }
     }
 }

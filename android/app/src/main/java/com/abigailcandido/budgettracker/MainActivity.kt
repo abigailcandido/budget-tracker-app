@@ -90,6 +90,13 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // When the session ends on its own — after a password reset, for
+                // example — clear anything left on the PIN screen, so the next
+                // sign-in starts from a clean form.
+                LaunchedEffect(state.isSignedIn) {
+                    if (!state.isSignedIn) pinViewModel.reset()
+                }
+                
                 when {
                     state.isCheckingSession -> LoadingScreen()
 
@@ -121,6 +128,7 @@ class MainActivity : ComponentActivity() {
                             state = pinState,
                             onPinChange = pinViewModel::onPinChange,
                             onSubmit = pinViewModel::verifyPin,
+                            onRequestResetLink = pinViewModel::requestResetLink,
                             onSignOut = signOut,
                             modifier = Modifier.padding(padding),
                         )

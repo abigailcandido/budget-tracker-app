@@ -19,7 +19,10 @@ data class PinUiState(
     val confirmation: String = "",
     val password: String = "",
     val isSubmitting: Boolean = false,
+    val isSendingLink: Boolean = false,
     val errorMessage: String? = null,
+    // Where the reset link went, once one has been sent.
+    val notice: String? = null,
     val completed: Boolean = false,
 ) {
     val canSetPin: Boolean
@@ -29,7 +32,10 @@ data class PinUiState(
                 password.isNotBlank()
 
     val canVerifyPin: Boolean
-        get() = !isSubmitting && pin.length == PIN_LENGTH
+        get() = !isSubmitting && !isSendingLink && pin.length == PIN_LENGTH
+
+    val canRequestLink: Boolean
+        get() = !isSubmitting && !isSendingLink
 }
 
 class PinViewModel(private val repository: AuthRepository) : ViewModel() {
@@ -61,6 +67,28 @@ class PinViewModel(private val repository: AuthRepository) : ViewModel() {
         val current = _uiState.value
         if (!current.canVerifyPin) return
         submit { repository.verifyPin(current.pin) }
+    }
+
+    /**
+     * Emails a link for choosing a new PIN to the signed-in account's address.
+     * The user picks the new PIN on a web page, then comes back and unlocks
+     * with it here as usual.
+     */
+    fun requestResetLink() {
+        if (!_uiState.value.canRequestLink) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSendingLink = true, errorMessage = null, notice = null) }
+
+            when (val result = repository.requestPinReset()) {
+                is ApiResult.Success -> _uiState.update {
+                    it.copy(isSendingLink = false, notice = result.data)
+                }
+                is ApiResult.Failure -> _uiState.update {
+                    it.copy(isSendingLink = false, errorMessage = result.message)
+                }
+            }
+        }
     }
 
     fun reset() {

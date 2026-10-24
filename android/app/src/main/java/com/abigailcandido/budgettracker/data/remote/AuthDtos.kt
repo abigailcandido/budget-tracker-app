@@ -68,3 +68,13 @@ fun ApiErrorBody.readableMessage(fallback: String): String {
         else -> fallback
     }
 }
+
+@Serializable
+data class PasswordResetEmailRequest(
+    val email: String,
+)
+
+@Serializable
+data class MessageResponse(
+    val detail: String,
+)

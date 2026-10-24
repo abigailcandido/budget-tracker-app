@@ -11,6 +11,7 @@ import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.request.url
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 
@@ -31,9 +32,11 @@ object ApiClient {
         }
 
         install(Logging) {
-            // HEADERS, never BODY: request bodies here contain passwords and PINs,
-            // and Logcat is readable by anyone with the phone plugged in.
-            level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.BODY
+            // Headers only, and only in debug builds: request bodies contain
+            // passwords and PINs, and Logcat is readable by anyone with the phone
+            // plugged in. The session token is masked even in debug.
+            level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
+            sanitizeHeader { header -> header == HttpHeaders.Authorization }
         }
 
         install(HttpTimeout) {

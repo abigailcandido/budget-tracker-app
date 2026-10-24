@@ -15,7 +15,9 @@ import kotlinx.coroutines.launch
 
 internal const val MIN_PASSWORD_LENGTH = 8
 
-enum class AuthMode { SignIn, Register }
+private const val SESSION_ENDED_NOTICE = "You've been signed out. Sign in again to continue."
+
+enum class AuthMode { SignIn, Register, ResetPassword }
 
 data class AuthUiState(
     val mode: AuthMode = AuthMode.SignIn,
@@ -23,16 +25,20 @@ data class AuthUiState(
     val password: String = "",
     val isSubmitting: Boolean = false,
     val errorMessage: String? = null,
+    // Something worth telling the user that is not a problem, such as a reset
+    // link being on its way. Shown in a calmer style than errorMessage.
+    val notice: String? = null,
     val isCheckingSession: Boolean = true,
     val isSignedIn: Boolean = false,
     val hasPin: Boolean = false,
     val isUnlocked: Boolean = false,
 ) {
     val canSubmit: Boolean
-        get() = !isSubmitting &&
-                email.isNotBlank() &&
-                password.isNotBlank() &&
-                (mode == AuthMode.SignIn || password.length >= MIN_PASSWORD_LENGTH)
+        get() = !isSubmitting && email.isNotBlank() && when (mode) {
+            AuthMode.SignIn -> password.isNotBlank()
+            AuthMode.Register -> password.isNotBlank() && password.length >= MIN_PASSWORD_LENGTH
+            AuthMode.ResetPassword -> true
+        }
 }
 
 class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
@@ -42,30 +48,37 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
 
     init {
         refreshSession()
+        watchForEndedSession()
     }
 
     fun onEmailChange(value: String) {
-        _uiState.update { it.copy(email = value, errorMessage = null) }
+        _uiState.update { it.copy(email = value, errorMessage = null, notice = null) }
     }
 
     fun onPasswordChange(value: String) {
-        _uiState.update { it.copy(password = value, errorMessage = null) }
+        _uiState.update { it.copy(password = value, errorMessage = null, notice = null) }
     }
 
     fun onModeChange(mode: AuthMode) {
-        _uiState.update { it.copy(mode = mode, errorMessage = null) }
+        _uiState.update { it.copy(mode = mode, errorMessage = null, notice = null) }
     }
 
     fun submit() {
         val current = _uiState.value
         if (!current.canSubmit) return
 
-        viewModelScope.launch {
-            _uiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+        if (current.mode == AuthMode.ResetPassword) {
+            sendPasswordResetLink(current.email)
+            return
+        }
 
-            val result = when (current.mode) {
-                AuthMode.SignIn -> repository.login(current.email, current.password)
-                AuthMode.Register -> repository.register(current.email, current.password)
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSubmitting = true, errorMessage = null, notice = null) }
+
+            val result = if (current.mode == AuthMode.Register) {
+                repository.register(current.email, current.password)
+            } else {
+                repository.login(current.email, current.password)
             }
 
             when (result) {
@@ -103,6 +116,47 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         viewModelScope.launch {
             repository.logout()
             _uiState.value = AuthUiState(isCheckingSession = false)
+        }
+    }
+
+    private fun sendPasswordResetLink(email: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSubmitting = true, errorMessage = null, notice = null) }
+
+            when (val result = repository.requestPasswordReset(email)) {
+                // Back to the sign-in form with the email still filled in, ready
+                // for the new password once it has been chosen.
+                is ApiResult.Success -> _uiState.update {
+                    it.copy(
+                        isSubmitting = false,
+                        mode = AuthMode.SignIn,
+                        password = "",
+                        notice = result.data,
+                    )
+                }
+                is ApiResult.Failure -> _uiState.update {
+                    it.copy(isSubmitting = false, errorMessage = result.message)
+                }
+            }
+        }
+    }
+
+    /**
+     * Moves the app back to the sign-in screen if the stored session disappears
+     * while it thinks it is signed in. Without this, a session ended elsewhere —
+     * by a password reset, for example — would leave the app on a screen where
+     * every request fails until it was closed and reopened.
+     */
+    private fun watchForEndedSession() {
+        viewModelScope.launch {
+            repository.hasSession.collect { hasSession ->
+                if (!hasSession && _uiState.value.isSignedIn) {
+                    _uiState.value = AuthUiState(
+                        isCheckingSession = false,
+                        notice = SESSION_ENDED_NOTICE,
+                    )
+                }
+            }
         }
     }
 
