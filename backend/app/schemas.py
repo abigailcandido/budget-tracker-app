@@ -1,19 +1,44 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 BCRYPT_MAX_PASSWORD_BYTES = 72
 PIN_PATTERN = r"^\d{6}$"
 CURRENCY_PATTERN = r"^[A-Za-z]{3}$"
-MONEY_MAX_DIGITS = 14
 MONEY_DECIMAL_PLACES = 2
+# Matches the transactions table's amount column: up to 9,999,999,999.99.
+# Wallet balances are stored with two more digits, since they are sums.
+AMOUNT_MAX_DIGITS = 12
+
+CategoryKind = Literal["expense", "income"]
+TransactionKind = Literal["expense", "income"]
 
 
 def format_money(value: Decimal) -> str:
     """Render a stored amount as a fixed two-decimal string for the API."""
     return f"{value:.2f}"
 
+
+def _reject_future_date(value: date | None) -> date | None:
+    """Allow today and earlier, with one day of slack for time zones.
+
+    The phone sends its own local date. The Philippines is eight hours ahead of
+    the server's clock, so "today" on the phone can already be tomorrow on the
+    server; one day of slack keeps that from being refused. Anything further
+    ahead is a mistake, and planned future spending belongs to recurring rules.
+    """
+    if value is not None and value > date.today() + timedelta(days=1):
+        raise ValueError("The date can't be in the future")
+    return value
+
+
+def _clean_description(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
 
 class _NewPasswordRequest(BaseModel):
     """Shared rules for any request that chooses a new password."""
@@ -125,14 +150,26 @@ class WalletCreateRequest(_NamedRequest):
     currency: str = Field(pattern=CURRENCY_PATTERN)
     opening_balance: Decimal = Field(
         default=Decimal("0"),
-        max_digits=MONEY_MAX_DIGITS,
+        max_digits=AMOUNT_MAX_DIGITS,
         decimal_places=MONEY_DECIMAL_PLACES,
+    )
+    opening_date: date | None = Field(
+        default=None,
+        description=(
+            "The date to record the opening balance on, normally today on the "
+            "phone. Leave it out to use today's date on the server."
+        ),
     )
 
     @field_validator("currency")
     @classmethod
     def normalise_currency(cls, value: str) -> str:
         return value.strip().upper()
+
+    @field_validator("opening_date")
+    @classmethod
+    def opening_date_not_in_future(cls, value: date | None) -> date | None:
+        return _reject_future_date(value)
 
 
 class WalletUpdateRequest(_NamedRequest):
@@ -155,6 +192,14 @@ class WalletResponse(BaseModel):
 
 
 class CategoryCreateRequest(_NamedRequest):
+    kind: CategoryKind | None = Field(
+        default=None,
+        description=(
+            "Whether this is an expense or an income category. Leave it out for "
+            "an expense category. A subcategory always takes its parent's kind, "
+            "so this can be left out when parent_id is set."
+        ),
+    )
     parent_id: int | None = Field(
         default=None,
         ge=1,
@@ -230,6 +275,7 @@ class CategoryUpdateRequest(_NamedRequest):
 class CategoryResponse(BaseModel):
     id: int
     name: str
+    kind: str
     parent_id: int | None
     main_tracker_id: int | None
     is_global: bool
@@ -245,7 +291,91 @@ class TrackerCategoryResponse(BaseModel):
 
     id: int
     name: str
+    kind: str
     parent_id: int | None
     is_global: bool
     is_enabled: bool
     has_children: bool
+
+
+class TransactionCreateRequest(BaseModel):
+    wallet_id: int = Field(ge=1)
+    type: TransactionKind
+    amount: Decimal = Field(
+        gt=0,
+        max_digits=AMOUNT_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description="Always positive. Whether it adds or subtracts comes from type.",
+    )
+    category_id: int = Field(ge=1)
+    transaction_date: date
+    description: str | None = Field(default=None, max_length=255)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "wallet_id": 1,
+                "type": "expense",
+                "amount": "250.00",
+                "category_id": 1,
+                "transaction_date": "2026-10-24",
+                "description": "Weekly groceries",
+            }
+        },
+    )
+
+    @field_validator("transaction_date")
+    @classmethod
+    def not_in_future(cls, value: date) -> date:
+        return _reject_future_date(value)
+
+    @field_validator("description")
+    @classmethod
+    def tidy_description(cls, value: str | None) -> str | None:
+        return _clean_description(value)
+
+
+class TransactionUpdateRequest(BaseModel):
+    """Every field is optional; anything left out stays as it is.
+
+    Sending description as null clears it. For an opening balance only the
+    amount, date and description can change, and its amount may be negative.
+    """
+
+    wallet_id: int | None = Field(default=None, ge=1)
+    type: TransactionKind | None = None
+    amount: Decimal | None = Field(
+        default=None,
+        max_digits=AMOUNT_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+    )
+    category_id: int | None = Field(default=None, ge=1)
+    transaction_date: date | None = None
+    description: str | None = Field(default=None, max_length=255)
+
+    @field_validator("transaction_date")
+    @classmethod
+    def not_in_future(cls, value: date | None) -> date | None:
+        return _reject_future_date(value)
+
+    @field_validator("description")
+    @classmethod
+    def tidy_description(cls, value: str | None) -> str | None:
+        return _clean_description(value)
+
+
+class TransactionResponse(BaseModel):
+    id: int
+    wallet_id: int
+    wallet_name: str
+    currency: str
+    type: str
+    amount: str
+    category_id: int | None
+    category_name: str | None
+    # Filled in for a subcategory, so the client can show "Bills › Electricity"
+    # even when the parent is no longer switched on in this tracker.
+    parent_category_name: str | None
+    description: str | None
+    transaction_date: date
+    created_at: datetime

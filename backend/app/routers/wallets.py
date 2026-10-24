@@ -1,9 +1,11 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
-from app.models import Transaction, User, Wallet
+from app.models import TRANSACTION_OPENING, Transaction, User, Wallet
 from app.ownership import get_owned_tracker, get_owned_wallet
 from app.schemas import (
     WalletCreateRequest,
@@ -13,6 +15,8 @@ from app.schemas import (
 )
 
 router = APIRouter(tags=["wallets"])
+
+OPENING_DESCRIPTION = "Opening balance"
 
 
 def _to_response(wallet: Wallet) -> WalletResponse:
@@ -70,6 +74,24 @@ def create_wallet(
         balance=payload.opening_balance,
     )
     db.add(wallet)
+    db.flush()
+
+    # The starting amount is recorded as the wallet's first transaction, so the
+    # transaction log alone can rebuild the wallet's balance at any point in its
+    # history. The balance column is kept as well, as a running total, so no
+    # screen has to add up the whole log just to show a number.
+    if payload.opening_balance != 0:
+        db.add(
+            Transaction(
+                user_id=user.id,
+                wallet_id=wallet.id,
+                amount=payload.opening_balance,
+                type=TRANSACTION_OPENING,
+                description=OPENING_DESCRIPTION,
+                transaction_date=payload.opening_date or date.today(),
+            )
+        )
+
     db.commit()
     db.refresh(wallet)
 
@@ -135,7 +157,7 @@ def rename_wallet(
 @router.delete(
     "/wallets/{wallet_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete an empty wallet",
+    summary="Delete a wallet that has no transactions",
 )
 def delete_wallet(
     wallet_id: int,
@@ -144,15 +166,25 @@ def delete_wallet(
 ) -> None:
     wallet = get_owned_wallet(wallet_id, user, db)
 
+    # The opening balance does not count: it was created automatically with
+    # the wallet, and the app already warns before discarding the money in it.
+    # Real income and expenses are history the user entered, so they have to
+    # be removed on purpose first.
     has_transactions = (
-        db.query(Transaction).filter(Transaction.wallet_id == wallet.id).first()
+        db.query(Transaction.id)
+        .filter(
+            Transaction.wallet_id == wallet.id,
+            Transaction.type != TRANSACTION_OPENING,
+        )
+        .first()
         is not None
     )
     if has_transactions:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Remove this wallet's transactions before deleting it",
+            detail="This wallet has transactions. Delete them before deleting the wallet",
         )
 
+    db.query(Transaction).filter(Transaction.wallet_id == wallet.id).delete()
     db.delete(wallet)
     db.commit()

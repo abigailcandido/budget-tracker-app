@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
 from app.models import (
+    CATEGORY_EXPENSE,
     BudgetLimit,
     Category,
     MainTracker,
@@ -15,6 +16,7 @@ from app.models import (
 from app.ownership import get_owned_category, get_owned_tracker
 from app.schemas import (
     CategoryCreateRequest,
+    CategoryKind,
     CategoryResponse,
     CategoryUpdateRequest,
     TrackerCategoryResponse,
@@ -61,6 +63,7 @@ def _to_response(category: Category, parents: set[int]) -> CategoryResponse:
     return CategoryResponse(
         id=category.id,
         name=category.name,
+        kind=category.kind,
         parent_id=category.parent_id,
         main_tracker_id=category.main_tracker_id,
         is_global=category.main_tracker_id is None,
@@ -71,6 +74,7 @@ def _to_response(category: Category, parents: set[int]) -> CategoryResponse:
 
 def _reject_duplicate_name(
     name: str,
+    kind: str,
     parent_id: int | None,
     scope_tracker_id: int | None,
     user: User,
@@ -89,6 +93,9 @@ def _reject_duplicate_name(
     Subcategories are compared against their siblings only, since the picker
     shows the full path and "Bills > Electricity" is never mistaken for
     "Office > Electricity".
+
+    Income and expense categories never share a picker either, so an income
+    "Other" and an expense "Other" can both exist.
     """
     query = db.query(Category).filter(
         Category.user_id == user.id,
@@ -96,7 +103,7 @@ def _reject_duplicate_name(
     )
 
     if parent_id is None:
-        query = query.filter(Category.parent_id.is_(None))
+        query = query.filter(Category.parent_id.is_(None), Category.kind == kind)
         if scope_tracker_id is not None:
             query = query.filter(
                 or_(
@@ -213,6 +220,7 @@ def _rehome_direct_records(parent: Category, user: User, db: Session) -> None:
     general = Category(
         user_id=user.id,
         name=GENERAL_SUBCATEGORY_NAME,
+        kind=parent.kind,
         parent_id=parent.id,
         main_tracker_id=parent.main_tracker_id,
     )
@@ -354,6 +362,14 @@ def create_category(
                 detail="A subcategory always has the same scope as its parent",
             )
 
+        if payload.kind is not None and payload.kind != parent.kind:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A subcategory is always the same kind as its parent",
+            )
+
+    kind = parent.kind if parent is not None else (payload.kind or CATEGORY_EXPENSE)
+
     scope_tracker_id = (
         parent.main_tracker_id if parent is not None else payload.main_tracker_id
     )
@@ -374,7 +390,7 @@ def create_category(
                 detail="A private category already belongs to one tracker",
             )
 
-    _reject_duplicate_name(payload.name, payload.parent_id, scope_tracker_id, user, db)
+    _reject_duplicate_name(payload.name, kind, payload.parent_id, scope_tracker_id, user, db)
 
     if parent is not None:
         link_targets: list[MainTracker] = []
@@ -389,6 +405,7 @@ def create_category(
     category = Category(
         user_id=user.id,
         name=payload.name,
+        kind=kind,
         parent_id=parent.id if parent is not None else None,
         main_tracker_id=tracker.id if tracker is not None else None,
     )
@@ -404,6 +421,7 @@ def create_category(
         child = Category(
             user_id=user.id,
             name=child_name,
+            kind=kind,
             parent_id=category.id,
             main_tracker_id=category.main_tracker_id,
         )
@@ -425,15 +443,15 @@ def create_category(
     summary="List every category on your account",
 )
 def list_categories(
+    kind: CategoryKind | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[CategoryResponse]:
-    categories = (
-        db.query(Category)
-        .filter(Category.user_id == user.id)
-        .order_by(Category.name)
-        .all()
-    )
+    query = db.query(Category).filter(Category.user_id == user.id)
+    if kind is not None:
+        query = query.filter(Category.kind == kind)
+
+    categories = query.order_by(Category.name).all()
 
     parents = _parents_with_children(user, db)
 
@@ -454,6 +472,7 @@ def rename_category(
     category = get_owned_category(category_id, user, db)
     _reject_duplicate_name(
         payload.name,
+        category.kind,
         category.parent_id,
         category.main_tracker_id,
         user,
@@ -531,23 +550,23 @@ def delete_category(
 def list_tracker_categories(
     tracker_id: int,
     only_enabled: bool = False,
+    kind: CategoryKind | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[TrackerCategoryResponse]:
     tracker = get_owned_tracker(tracker_id, user, db)
 
-    applicable = (
-        db.query(Category)
-        .filter(
-            Category.user_id == user.id,
-            or_(
-                Category.main_tracker_id.is_(None),
-                Category.main_tracker_id == tracker.id,
-            ),
-        )
-        .order_by(Category.name)
-        .all()
+    query = db.query(Category).filter(
+        Category.user_id == user.id,
+        or_(
+            Category.main_tracker_id.is_(None),
+            Category.main_tracker_id == tracker.id,
+        ),
     )
+    if kind is not None:
+        query = query.filter(Category.kind == kind)
+
+    applicable = query.order_by(Category.name).all()
 
     enabled_ids = _enabled_ids(tracker, db)
     parents = _parents_with_children(user, db)
@@ -556,6 +575,7 @@ def list_tracker_categories(
         TrackerCategoryResponse(
             id=category.id,
             name=category.name,
+            kind=category.kind,
             parent_id=category.parent_id,
             is_global=category.main_tracker_id is None,
             is_enabled=category.id in enabled_ids,

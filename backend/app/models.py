@@ -10,6 +10,18 @@ from sqlalchemy.sql import func
 
 from app.database import Base
 
+# What a category is used for. Income and expense categories are kept apart,
+# so Salary never appears in the picker for groceries and vice versa.
+CATEGORY_EXPENSE = "expense"
+CATEGORY_INCOME = "income"
+
+# What a transaction does to its wallet. Income adds, expense subtracts, and
+# an opening balance sets the starting point when a wallet is created. Income
+# and expense amounts are always positive; an opening balance may be negative,
+# for a wallet such as a credit card that starts out owing money.
+TRANSACTION_INCOME = "income"
+TRANSACTION_EXPENSE = "expense"
+TRANSACTION_OPENING = "opening"
 
 class User(Base):
     __tablename__ = "users"
@@ -77,6 +89,7 @@ class Category(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(10), server_default=CATEGORY_EXPENSE)
     parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("categories.id"), nullable=True, index=True)
     main_tracker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("main_trackers.id"), nullable=True, index=True)
     savings_tracker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("savings_trackers.id"), nullable=True, index=True)

@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.models import Category, MainTracker, User, Wallet
+from app.models import Category, MainTracker, Transaction, User, Wallet
 
 
 def get_owned_tracker(tracker_id: int, user: User, db: Session) -> MainTracker:
@@ -63,3 +63,33 @@ def get_owned_category(category_id: int, user: User, db: Session) -> Category:
         )
 
     return category
+
+
+def get_owned_transaction(
+    transaction_id: int,
+    user: User,
+    db: Session,
+    for_update: bool = False,
+) -> Transaction:
+    """Fetch a transaction belonging to this user, or raise 404.
+
+    With for_update, the row is locked until the request commits, so two edits
+    to the same transaction arriving together are applied one after the other
+    instead of both starting from the same old amount.
+    """
+    query = db.query(Transaction).filter(
+        Transaction.id == transaction_id,
+        Transaction.user_id == user.id,
+    )
+    if for_update:
+        query = query.with_for_update().populate_existing()
+
+    transaction = query.first()
+
+    if transaction is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transaction not found",
+        )
+
+    return transaction

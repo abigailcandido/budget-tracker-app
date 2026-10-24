@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from datetime import date, timedelta
 import urllib.error
 import urllib.request
 
@@ -433,7 +434,7 @@ def main() -> None:
     )
     check("wallet name differing only in case rejected", status, 409)
 
-    status, _ = call(
+    status, cash_two = call(
         "POST", f"/trackers/{two}/wallets", token_a, {"name": "Cash", "currency": "PHP"}
     )
     check("same wallet name allowed in another tracker", status, 201)
@@ -454,6 +455,230 @@ def main() -> None:
         names(rows),
         ["Bills", "Electricity", "Groceries", "Rent", "Water"],
     )
+    
+    print("\nIncome categories")
+    status, salary = call("POST", "/categories", token_a, {"name": "Salary", "kind": "income"})
+    check("create an income category", status, 201)
+    check("it is marked as income", (salary or {}).get("kind"), "income")
+
+    status, _ = call("POST", "/categories", token_a, {"name": "Other"})
+    check("create an expense category called Other", status, 201)
+
+    status, _ = call("POST", "/categories", token_a, {"name": "Other", "kind": "income"})
+    check("an income category may share a name with an expense one", status, 201)
+
+    status, _ = call("POST", "/categories", token_a, {"name": "other", "kind": "income"})
+    check("but not with another income one", status, 409)
+
+    status, freelance = call(
+        "POST", "/categories", token_a, {"name": "Freelance", "kind": "income"}
+    )
+    status, design = call(
+        "POST", "/categories", token_a, {"name": "Design", "parent_id": freelance["id"]}
+    )
+    check("create an income subcategory", status, 201)
+    check("it takes its parent's kind", (design or {}).get("kind"), "income")
+
+    status, _ = call(
+        "POST",
+        "/categories",
+        token_a,
+        {"name": "Tips", "parent_id": freelance["id"], "kind": "expense"},
+    )
+    check("a subcategory cannot be a different kind", status, 409)
+
+    status, rows = call("GET", f"/trackers/{one}/categories?kind=income", token_a)
+    check("list only income categories", names(rows), ["Design", "Freelance", "Other", "Salary"])
+
+    print("\nTransactions")
+
+    def balance_of(wallet_id: int):
+        _, body = call("GET", f"/wallets/{wallet_id}", token_a)
+        return (body or {}).get("balance")
+
+    today = date.today()
+
+    status, rows = call("GET", f"/trackers/{one}/transactions", token_a)
+    check(
+        "a wallet's opening balance is its first transaction",
+        [(row["type"], row["amount"], row["wallet_name"]) for row in rows or []],
+        [("opening", "1500.50", "Cash")],
+    )
+
+    status, groceries_run = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {
+            "wallet_id": wallet["id"],
+            "type": "expense",
+            "amount": "250.00",
+            "category_id": groceries["id"],
+            "transaction_date": today.isoformat(),
+            "description": "  Weekly groceries  ",
+        },
+    )
+    check("record an expense", status, 201)
+    check("its description is tidied", (groceries_run or {}).get("description"), "Weekly groceries")
+    check("the wallet's balance goes down", balance_of(wallet["id"]), "1250.50")
+
+    status, pay = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {
+            "wallet_id": bank["id"],
+            "type": "income",
+            "amount": "30000.00",
+            "category_id": salary["id"],
+            "transaction_date": today.isoformat(),
+        },
+    )
+    check("record an income", status, 201)
+    check("the wallet's balance goes up", balance_of(bank["id"]), "30000.00")
+
+    expense = {
+        "wallet_id": wallet["id"],
+        "type": "expense",
+        "amount": "10.00",
+        "category_id": groceries["id"],
+        "transaction_date": today.isoformat(),
+    }
+
+    status, _ = call("POST", "/transactions", token_a, {**expense, "category_id": salary["id"]})
+    check("an expense cannot use an income category", status, 409)
+
+    status, _ = call("POST", "/transactions", token_a, {**expense, "category_id": bills["id"]})
+    check("a category with subcategories cannot be used directly", status, 409)
+
+    status, _ = call(
+        "POST", "/transactions", token_a, {**expense, "category_id": utilities["id"]}
+    )
+    check("a category private to another tracker is refused", status, 409)
+
+    call("DELETE", f"/trackers/{one}/categories/{water['id']}", token_a)
+    status, _ = call("POST", "/transactions", token_a, {**expense, "category_id": water["id"]})
+    check("a category switched off in this tracker is refused", status, 409)
+    call("PUT", f"/trackers/{one}/categories/{water['id']}", token_a)
+
+    status, _ = call("POST", "/transactions", token_a, {**expense, "amount": "0"})
+    check("a zero amount is refused", status, 422)
+
+    status, _ = call("POST", "/transactions", token_a, {**expense, "amount": "-5"})
+    check("a negative amount is refused", status, 422)
+
+    status, _ = call("POST", "/transactions", token_a, {**expense, "amount": "1.005"})
+    check("more than two decimal places is refused", status, 422)
+
+    status, _ = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {**expense, "transaction_date": (today + timedelta(days=5)).isoformat()},
+    )
+    check("a date in the future is refused", status, 422)
+
+    status, bill = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {**expense, "amount": "2000.00", "category_id": electricity["id"]},
+    )
+    check("an expense larger than the balance is allowed", status, 201)
+    check("and the balance goes below zero", balance_of(wallet["id"]), "-749.50")
+
+    status, _ = call("PATCH", f"/transactions/{bill['id']}", token_a, {"amount": "200.00"})
+    check("correct an amount", status, 200)
+    check("the balance follows the correction", balance_of(wallet["id"]), "1050.50")
+
+    status, _ = call("PATCH", f"/transactions/{bill['id']}", token_a, {"wallet_id": bank["id"]})
+    check("move a transaction to another wallet", status, 200)
+    check("the old wallet gets the money back", balance_of(wallet["id"]), "1250.50")
+    check("the new wallet is charged", balance_of(bank["id"]), "29800.00")
+
+    status, _ = call(
+        "PATCH", f"/transactions/{bill['id']}", token_a, {"wallet_id": cash_two["id"]}
+    )
+    check("moving to a wallet in another tracker is refused", status, 409)
+
+    status, _ = call("PATCH", f"/transactions/{bill['id']}", token_a, {"type": "income"})
+    check("becoming an income without an income category is refused", status, 409)
+
+    status, _ = call(
+        "PATCH",
+        f"/transactions/{bill['id']}",
+        token_a,
+        {"type": "income", "category_id": salary["id"]},
+    )
+    check("change an expense into an income", status, 200)
+    check("the balance swings the other way", balance_of(bank["id"]), "30200.00")
+
+    status, cleared = call(
+        "PATCH", f"/transactions/{groceries_run['id']}", token_a, {"description": None}
+    )
+    check("clear a description", (status, (cleared or {}).get("description")), (200, None))
+
+    call("DELETE", f"/trackers/{one}/categories/{groceries['id']}", token_a)
+    status, _ = call(
+        "PATCH", f"/transactions/{groceries_run['id']}", token_a, {"amount": "300.00"}
+    )
+    check("an entry keeps a category that was switched off later", status, 200)
+    call("PUT", f"/trackers/{one}/categories/{groceries['id']}", token_a)
+    check("the balance follows that correction too", balance_of(wallet["id"]), "1200.50")
+
+    status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={wallet['id']}", token_a)
+    opening = next((row for row in rows or [] if row["type"] == "opening"), {})
+
+    status, _ = call("PATCH", f"/transactions/{opening.get('id')}", token_a, {"amount": "1000.00"})
+    check("correct an opening balance", status, 200)
+    check("the balance follows the opening balance", balance_of(wallet["id"]), "700.00")
+
+    status, _ = call("PATCH", f"/transactions/{opening.get('id')}", token_a, {"type": "expense"})
+    check("an opening balance cannot change type", status, 409)
+
+    status, rows = call("GET", f"/trackers/{one}/transactions", token_a)
+    check(
+        "listed newest first, with the opening balance last",
+        [(row["type"], row["amount"]) for row in rows or []],
+        [("income", "200.00"), ("income", "30000.00"), ("expense", "300.00"), ("opening", "1000.00")],
+    )
+
+    status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={bank['id']}", token_a)
+    check("list one wallet's transactions", [row["amount"] for row in rows or []], ["200.00", "30000.00"])
+
+    status, _ = call("DELETE", f"/transactions/{groceries_run['id']}", token_a)
+    check("delete a transaction", status, 204)
+    check("its amount returns to the wallet", balance_of(wallet["id"]), "1000.00")
+
+    status, _ = call("DELETE", f"/categories/{salary['id']}", token_a)
+    check("a category with transactions cannot be deleted", status, 409)
+
+    status, _ = call("POST", "/categories", token_a, {"name": "Bonus", "parent_id": salary["id"]})
+    check("give a category in use its first subcategory", status, 201)
+
+    status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={bank['id']}", token_a)
+    check(
+        "its transactions move into General",
+        sorted({(row["parent_category_name"], row["category_name"]) for row in rows or []}),
+        [("Salary", "General")],
+    )
+
+    status, _ = call("DELETE", f"/wallets/{bank['id']}", token_a)
+    check("a wallet with transactions cannot be deleted", status, 409)
+
+    status, coins = call(
+        "POST",
+        f"/trackers/{one}/wallets",
+        token_a,
+        {
+            "name": "Coins",
+            "currency": "PHP",
+            "opening_balance": "50.00",
+            "opening_date": today.isoformat(),
+        },
+    )
+    status, _ = call("DELETE", f"/wallets/{coins['id']}", token_a)
+    check("a wallet with only its opening balance can be deleted", status, 204)
 
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)
@@ -464,6 +689,18 @@ def main() -> None:
 
     status, _ = call("GET", f"/wallets/{wallet['id']}", token_b)
     check("another account's wallet is not found", status, 404)
+    
+    status, _ = call("GET", f"/transactions/{pay['id']}", token_b)
+    check("another account's transaction is not found", status, 404)
+
+    status, _ = call("PATCH", f"/transactions/{pay['id']}", token_b, {"amount": "1.00"})
+    check("another account's transaction cannot be changed", status, 404)
+
+    status, _ = call("GET", f"/trackers/{one}/transactions", token_b)
+    check("another account's transactions cannot be listed", status, 404)
+
+    status, _ = call("POST", "/transactions", token_b, expense)
+    check("nothing can be recorded in another account's wallet", status, 404)
 
     status, _ = call("GET", "/trackers/999999", token_a)
     check("missing tracker is not found", status, 404)
