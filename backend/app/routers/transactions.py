@@ -5,15 +5,17 @@ database transaction, so the cached balance and the transaction log can never
 disagree: either both are saved or neither is.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import case
+from sqlalchemy import and_, case, func
 from sqlalchemy.orm import Session, aliased
 
 from app.deps import get_current_user, get_db
 from app.models import (
     TRANSACTION_EXPENSE,
+    TRANSACTION_INCOME,
     TRANSACTION_OPENING,
     Category,
     TrackerCategory,
@@ -28,9 +30,12 @@ from app.ownership import (
     get_owned_wallet,
 )
 from app.schemas import (
+    CurrencyTotalResponse,
+    TrackerSummaryResponse,
     TransactionCreateRequest,
     TransactionResponse,
     TransactionUpdateRequest,
+    WalletSummaryResponse,
     format_money,
 )
 
@@ -176,6 +181,14 @@ def _load_response(transaction_id: int, db: Session) -> TransactionResponse:
     return _to_response(*row)
 
 
+def _reject_backwards_range(start_date: date | None, end_date: date | None) -> None:
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="The start date must be on or before the end date",
+        )
+    
+
 # --------------------------------------------------------------------------
 # Endpoints
 # --------------------------------------------------------------------------
@@ -227,14 +240,23 @@ def create_transaction(
 def list_transactions(
     tracker_id: int,
     wallet_id: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[TransactionResponse]:
+    _reject_backwards_range(start_date, end_date)
     tracker = get_owned_tracker(tracker_id, user, db)
 
     query = _described(db).filter(Wallet.main_tracker_id == tracker.id)
+
+    # Both ends are included, so a range of one day is start_date == end_date.
+    if start_date is not None:
+        query = query.filter(Transaction.transaction_date >= start_date)
+    if end_date is not None:
+        query = query.filter(Transaction.transaction_date <= end_date)
 
     if wallet_id is not None:
         wallet = get_owned_wallet(wallet_id, user, db)
@@ -261,6 +283,108 @@ def list_transactions(
 
     return [_to_response(*row) for row in rows]
 
+@router.get(
+    "/trackers/{tracker_id}/summary",
+    response_model=TrackerSummaryResponse,
+    summary="Each wallet's opening, income, expenses and ending balance over a date range",
+)
+def tracker_summary(
+    tracker_id: int,
+    start_date: date,
+    end_date: date,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TrackerSummaryResponse:
+    _reject_backwards_range(start_date, end_date)
+    tracker = get_owned_tracker(tracker_id, user, db)
+
+    wallets = (
+        db.query(Wallet)
+        .filter(Wallet.main_tracker_id == tracker.id)
+        .order_by(Wallet.created_at)
+        .all()
+    )
+
+    signed = case(
+        (Transaction.type == TRANSACTION_EXPENSE, -Transaction.amount),
+        else_=Transaction.amount,
+    )
+    in_range = Transaction.transaction_date >= start_date
+
+    def total(condition, value):
+        return func.coalesce(func.sum(case((condition, value), else_=0)), 0)
+
+    # One pass over each wallet's entries up to the end of the range. Opening
+    # is everything before the range began, plus an opening balance recorded
+    # inside it — a wallet created mid-month starts the month with that amount
+    # rather than with zero and an unexplained jump. With opening defined that
+    # way, opening + income - expenses is always exactly the ending balance.
+    rows = (
+        db.query(
+            Transaction.wallet_id,
+            total(Transaction.transaction_date < start_date, signed),
+            total(and_(in_range, Transaction.type == TRANSACTION_OPENING), Transaction.amount),
+            total(and_(in_range, Transaction.type == TRANSACTION_INCOME), Transaction.amount),
+            total(and_(in_range, Transaction.type == TRANSACTION_EXPENSE), Transaction.amount),
+        )
+        .join(Wallet, Transaction.wallet_id == Wallet.id)
+        .filter(
+            Wallet.main_tracker_id == tracker.id,
+            Transaction.transaction_date <= end_date,
+        )
+        .group_by(Transaction.wallet_id)
+        .all()
+    )
+    figures = {
+        wallet_id: (Decimal(before) + Decimal(opened), Decimal(income), Decimal(spent))
+        for wallet_id, before, opened, income, spent in rows
+    }
+
+    wallet_rows: list[WalletSummaryResponse] = []
+    totals: dict[str, list[Decimal]] = {}
+
+    for wallet in wallets:
+        # A wallet that did not exist yet when the range ended has nothing to
+        # say about it, so it is left out rather than shown as a row of zeros.
+        if wallet.id not in figures and wallet.created_at.date() > end_date:
+            continue
+
+        opening, income, expenses = figures.get(
+            wallet.id, (Decimal("0"), Decimal("0"), Decimal("0"))
+        )
+        ending = opening + income - expenses
+
+        wallet_rows.append(
+            WalletSummaryResponse(
+                wallet_id=wallet.id,
+                wallet_name=wallet.name,
+                currency=wallet.currency,
+                opening=format_money(opening),
+                income=format_money(income),
+                expenses=format_money(expenses),
+                ending=format_money(ending),
+            )
+        )
+
+        running = totals.setdefault(wallet.currency, [Decimal("0")] * 4)
+        for index, amount in enumerate((opening, income, expenses, ending)):
+            running[index] += amount
+
+    return TrackerSummaryResponse(
+        start_date=start_date,
+        end_date=end_date,
+        wallets=wallet_rows,
+        totals=[
+            CurrencyTotalResponse(
+                currency=currency,
+                opening=format_money(opening),
+                income=format_money(income),
+                expenses=format_money(expenses),
+                ending=format_money(ending),
+            )
+            for currency, (opening, income, expenses, ending) in totals.items()
+        ],
+    )
 
 @router.get(
     "/transactions/{transaction_id}",

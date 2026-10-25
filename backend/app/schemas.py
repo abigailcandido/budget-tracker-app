@@ -379,3 +379,40 @@ class TransactionResponse(BaseModel):
     description: str | None
     transaction_date: date
     created_at: datetime
+    
+
+class WalletSummaryResponse(BaseModel):
+    """One wallet's movement over a date range.
+
+    opening + income - expenses always equals ending, so a table built from
+    these rows always adds up across.
+    """
+
+    wallet_id: int
+    wallet_name: str
+    currency: str
+    opening: str
+    income: str
+    expenses: str
+    ending: str
+
+
+class CurrencyTotalResponse(BaseModel):
+    """The same four figures added up across every wallet in one currency.
+
+    Amounts in different currencies are never added together, so a tracker
+    with both peso and dollar wallets gets one total per currency.
+    """
+
+    currency: str
+    opening: str
+    income: str
+    expenses: str
+    ending: str
+
+
+class TrackerSummaryResponse(BaseModel):
+    start_date: date
+    end_date: date
+    wallets: list[WalletSummaryResponse]
+    totals: list[CurrencyTotalResponse]

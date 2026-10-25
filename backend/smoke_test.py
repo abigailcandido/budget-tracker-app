@@ -679,6 +679,88 @@ def main() -> None:
     )
     status, _ = call("DELETE", f"/wallets/{coins['id']}", token_a)
     check("a wallet with only its opening balance can be deleted", status, 204)
+    
+    print("\nDate ranges and summaries")
+    long_ago = "2000-01-01"
+    tomorrow = (today + timedelta(days=1)).isoformat()
+
+    status, rows = call(
+        "GET", f"/trackers/{one}/transactions?start_date={long_ago}&end_date={long_ago}", token_a
+    )
+    check("a range with nothing in it lists nothing", (status, rows), (200, []))
+
+    status, everything = call("GET", f"/trackers/{one}/transactions", token_a)
+    status, ranged = call(
+        "GET", f"/trackers/{one}/transactions?start_date={long_ago}&end_date={tomorrow}", token_a
+    )
+    check(
+        "a range covering everything lists everything",
+        [row["id"] for row in ranged or []],
+        [row["id"] for row in everything or []],
+    )
+
+    status, _ = call(
+        "GET", f"/trackers/{one}/transactions?start_date={tomorrow}&end_date={long_ago}", token_a
+    )
+    check("a range that ends before it starts is refused", status, 422)
+
+    status, _ = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {**expense, "amount": "100.00", "category_id": groceries["id"]},
+    )
+
+    def summary_rows(start: str, end: str):
+        _, body = call(
+            "GET", f"/trackers/{one}/summary?start_date={start}&end_date={end}", token_a
+        )
+        body = body or {}
+        wallets = [
+            (row["wallet_name"], row["opening"], row["income"], row["expenses"], row["ending"])
+            for row in body.get("wallets", [])
+        ]
+        totals = [
+            (row["currency"], row["opening"], row["income"], row["expenses"], row["ending"])
+            for row in body.get("totals", [])
+        ]
+        return wallets, totals
+
+    wallets, totals = summary_rows(long_ago, tomorrow)
+    check(
+        "a summary splits each wallet into opening, income, expenses and ending",
+        wallets,
+        [
+            ("Cash", "1000.00", "0.00", "100.00", "900.00"),
+            ("Bank", "0.00", "30200.00", "0.00", "30200.00"),
+        ],
+    )
+    check(
+        "and adds them up per currency",
+        totals,
+        [("PHP", "1000.00", "30200.00", "100.00", "31100.00")],
+    )
+    check(
+        "the ending balance matches the wallet's balance",
+        (wallets[0][4] if wallets else None, balance_of(wallet["id"])),
+        ("900.00", "900.00"),
+    )
+
+    later = (today + timedelta(days=2)).isoformat()
+    wallets, _ = summary_rows(later, later)
+    check(
+        "a range after every entry opens with the full balance",
+        wallets,
+        [
+            ("Cash", "900.00", "0.00", "0.00", "900.00"),
+            ("Bank", "30200.00", "0.00", "0.00", "30200.00"),
+        ],
+    )
+
+    status, _ = call(
+        "GET", f"/trackers/{one}/summary?start_date={tomorrow}&end_date={long_ago}", token_a
+    )
+    check("a summary range that ends before it starts is refused", status, 422)
 
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)
@@ -701,6 +783,13 @@ def main() -> None:
 
     status, _ = call("POST", "/transactions", token_b, expense)
     check("nothing can be recorded in another account's wallet", status, 404)
+    
+    status, _ = call(
+        "GET",
+        f"/trackers/{one}/summary?start_date=2000-01-01&end_date=2000-01-31",
+        token_b,
+    )
+    check("another account's summary is not found", status, 404)
 
     status, _ = call("GET", "/trackers/999999", token_a)
     check("missing tracker is not found", status, 404)
