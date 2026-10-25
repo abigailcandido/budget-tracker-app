@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.abigailcandido.budgettracker.data.remote.CategoryKind
+import com.abigailcandido.budgettracker.data.remote.categoryKind
 import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.TrackerRepository
 import com.abigailcandido.budgettracker.data.remote.ApiResult
@@ -18,6 +20,7 @@ import kotlinx.coroutines.launch
 data class GlobalCategoryListUiState(
     val isLoading: Boolean = true,
     val categories: List<CategoryResponse> = emptyList(),
+    val selectedKind: CategoryKind = CategoryKind.Expense,
     val errorMessage: String? = null,
     val addRequest: AddRequest? = null,
     val newName: String = "",
@@ -36,11 +39,15 @@ data class GlobalCategoryListUiState(
     val trimmedName: String
         get() = newName.trim()
 
+    /** The categories on the tab currently showing. */
+    val visibleCategories: List<CategoryResponse>
+        get() = categories.filter { it.categoryKind == selectedKind }
+
     val parents: List<CategoryResponse>
-        get() = categories.filter { it.parentId == null }
+        get() = visibleCategories.filter { it.parentId == null }
 
     val childrenByParent: Map<Int, List<CategoryResponse>>
-        get() = categories
+        get() = visibleCategories
             .filter { it.parentId != null }
             .groupBy { it.parentId!! }
 
@@ -50,11 +57,11 @@ data class GlobalCategoryListUiState(
             return when (val request = addRequest) {
                 null -> null
 
-                is AddRequest.TopLevel -> categories.firstOrNull {
+                is AddRequest.TopLevel -> visibleCategories.firstOrNull {
                     it.parentId == null && it.name.equals(trimmedName, ignoreCase = true)
                 }
 
-                is AddRequest.Subcategory -> categories.firstOrNull {
+                is AddRequest.Subcategory -> visibleCategories.firstOrNull {
                     it.parentId == request.parentId &&
                             it.name.equals(trimmedName, ignoreCase = true)
                 }
@@ -108,6 +115,10 @@ class GlobalCategoryListViewModel(
                 },
             )
         }
+    }
+
+    fun onKindSelected(kind: CategoryKind) {
+        _uiState.update { it.copy(selectedKind = kind) }
     }
 
     fun onAddTopLevelClick() {
@@ -211,6 +222,7 @@ class GlobalCategoryListViewModel(
                     name = current.newName,
                     trackerIds = current.selectedTrackerIds?.toList(),
                     subcategoryNames = subcategories,
+                    kind = current.selectedKind,
                 )
             }
 

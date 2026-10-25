@@ -6,6 +6,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.remote.ApiResult
+import com.abigailcandido.budgettracker.data.remote.CategoryKind
+import com.abigailcandido.budgettracker.data.remote.categoryKind
 import com.abigailcandido.budgettracker.data.remote.CategoryResponse
 import com.abigailcandido.budgettracker.data.remote.TrackerCategoryResponse
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +36,7 @@ sealed interface AddRequest {
 data class CategoryListUiState(
     val isLoading: Boolean = true,
     val categories: List<TrackerCategoryResponse> = emptyList(),
+    val selectedKind: CategoryKind = CategoryKind.Expense,
     val errorMessage: String? = null,
     val addRequest: AddRequest? = null,
     val newName: String = "",
@@ -51,22 +54,29 @@ data class CategoryListUiState(
     val trimmedName: String
         get() = newName.trim()
 
+    /**
+     * The categories on the tab currently showing. Everything below draws from
+     * this, so an expense "Other" never blocks or matches an income "Other".
+     */
+    val visibleCategories: List<TrackerCategoryResponse>
+        get() = categories.filter { it.categoryKind == selectedKind }
+
     val parents: List<TrackerCategoryResponse>
-        get() = categories.filter { it.parentId == null }
+        get() = visibleCategories.filter { it.parentId == null }
 
     val childrenByParent: Map<Int, List<TrackerCategoryResponse>>
-        get() = categories
+        get() = visibleCategories
             .filter { it.parentId != null }
             .groupBy { it.parentId!! }
 
     /**
      * A shared category already carrying the name being typed. When set, the
-     * dialog offers to switch that one on instead of creating a lookalike.
+     * page offers to switch that one on instead of creating a lookalike.
      */
     val existingGlobalMatch: TrackerCategoryResponse?
         get() {
             if (addRequest !is AddRequest.TopLevel || trimmedName.isEmpty()) return null
-            return categories.firstOrNull {
+            return visibleCategories.firstOrNull {
                 it.parentId == null &&
                         it.isGlobal &&
                         it.name.equals(trimmedName, ignoreCase = true)
@@ -84,13 +94,13 @@ data class CategoryListUiState(
             return when (val request = addRequest) {
                 null -> null
 
-                is AddRequest.TopLevel -> categories.firstOrNull {
+                is AddRequest.TopLevel -> visibleCategories.firstOrNull {
                     it.parentId == null &&
                             !it.isGlobal &&
                             it.name.equals(trimmedName, ignoreCase = true)
                 }
 
-                is AddRequest.Subcategory -> categories.firstOrNull {
+                is AddRequest.Subcategory -> visibleCategories.firstOrNull {
                     it.parentId == request.parentId &&
                             it.name.equals(trimmedName, ignoreCase = true)
                 }
@@ -138,6 +148,10 @@ class CategoryListViewModel(
                 },
             )
         }
+    }
+
+    fun onKindSelected(kind: CategoryKind) {
+        _uiState.update { it.copy(selectedKind = kind) }
     }
 
     fun onAddTopLevelClick() {
@@ -219,10 +233,16 @@ class CategoryListViewModel(
                         name = current.newName,
                         trackerIds = listOf(trackerId),
                         subcategoryNames = subcategories,
+                        kind = current.selectedKind,
                     )
 
                 else ->
-                    repository.createPrivate(current.newName, trackerId, subcategories)
+                    repository.createPrivate(
+                        name = current.newName,
+                        trackerId = trackerId,
+                        subcategoryNames = subcategories,
+                        kind = current.selectedKind,
+                    )
             }
 
             when (result) {

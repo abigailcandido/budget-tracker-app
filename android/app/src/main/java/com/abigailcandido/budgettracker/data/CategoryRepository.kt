@@ -3,6 +3,7 @@ package com.abigailcandido.budgettracker.data
 import com.abigailcandido.budgettracker.data.local.TokenStore
 import com.abigailcandido.budgettracker.data.remote.ApiResult
 import com.abigailcandido.budgettracker.data.remote.CategoryApi
+import com.abigailcandido.budgettracker.data.remote.CategoryKind
 import com.abigailcandido.budgettracker.data.remote.CategoryResponse
 import com.abigailcandido.budgettracker.data.remote.TrackerCategoryResponse
 
@@ -25,6 +26,7 @@ class CategoryRepository(
         name: String,
         trackerIds: List<Int>?,
         subcategoryNames: List<String> = emptyList(),
+        kind: CategoryKind = CategoryKind.Expense,
     ): ApiResult<CategoryResponse> =
         tokenStore.withToken { token ->
             api.create(
@@ -34,6 +36,7 @@ class CategoryRepository(
                 mainTrackerId = null,
                 trackerIds = trackerIds,
                 subcategoryNames = subcategoryNames.takeIf { it.isNotEmpty() },
+                kind = kind.apiValue,
             )
         }
 
@@ -42,6 +45,7 @@ class CategoryRepository(
         name: String,
         trackerId: Int,
         subcategoryNames: List<String> = emptyList(),
+        kind: CategoryKind = CategoryKind.Expense,
     ): ApiResult<CategoryResponse> =
         tokenStore.withToken { token ->
             api.create(
@@ -51,10 +55,14 @@ class CategoryRepository(
                 mainTrackerId = trackerId,
                 trackerIds = null,
                 subcategoryNames = subcategoryNames.takeIf { it.isNotEmpty() },
+                kind = kind.apiValue,
             )
         }
 
-    /** A subcategory. Its scope and switches are inherited from its parent. */
+    /**
+     * A subcategory. Its scope, switches and kind are all inherited from its
+     * parent, so none of them is sent.
+     */
     suspend fun createSubcategory(
         name: String,
         parentId: Int,

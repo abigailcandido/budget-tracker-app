@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(state.isSignedIn) {
                     if (!state.isSignedIn) pinViewModel.reset()
                 }
-                
+
                 when {
                     state.isCheckingSession -> LoadingScreen()
 
@@ -218,6 +218,7 @@ private fun SignedInNavHost(
 
             GlobalCategoryListScreen(
                 state = globalState,
+                onKindSelected = globalViewModel::onKindSelected,
                 onBack = { navController.popBackStack() },
                 onAddTopLevelClick = {
                     globalViewModel.onAddTopLevelClick()
@@ -323,6 +324,7 @@ private fun SignedInNavHost(
             CategoryListScreen(
                 trackerName = route.trackerName,
                 state = categoryState,
+                onKindSelected = categoryViewModel::onKindSelected,
                 onBack = { navController.popBackStack() },
                 onAddTopLevelClick = {
                     categoryViewModel.onAddTopLevelClick()

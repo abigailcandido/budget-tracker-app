@@ -57,7 +57,7 @@ fun AddGlobalCategoryScreen(
                         if (request is AddRequest.Subcategory) {
                             "Add under ${request.parentName}"
                         } else {
-                            "Add global category"
+                            "Add global ${state.selectedKind.singular} category"
                         }
                     )
                 },

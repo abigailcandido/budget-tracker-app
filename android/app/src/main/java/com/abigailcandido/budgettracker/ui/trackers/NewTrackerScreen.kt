@@ -30,6 +30,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.abigailcandido.budgettracker.data.remote.CategoryKind
+import com.abigailcandido.budgettracker.data.remote.categoryKind
+import com.abigailcandido.budgettracker.ui.categories.groupLabel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -152,23 +155,42 @@ fun NewTrackerScreen(
                     )
                 }
 
-                else -> items(parents, key = { it.id }) { parent ->
-                    Column {
-                        CategoryCheckRow(
-                            name = parent.name,
-                            checked = state.selectedCategoryIds?.contains(parent.id) == true,
-                            indent = 0.dp,
-                            enabled = !state.isCreating,
-                            onToggle = { onCategoryToggle(parent.id) },
-                        )
-                        childrenByParent[parent.id].orEmpty().forEach { child ->
-                            CategoryCheckRow(
-                                name = child.name,
-                                checked = state.selectedCategoryIds?.contains(child.id) == true,
-                                indent = 32.dp,
-                                enabled = !state.isCreating,
-                                onToggle = { onCategoryToggle(child.id) },
+                // One group per kind, expenses first. A kind with no categories
+                // yet is simply left out rather than shown as an empty heading.
+                else -> CategoryKind.entries.forEach { kind ->
+                    val group = parents.filter { it.categoryKind == kind }
+
+                    if (group.isNotEmpty()) {
+                        item(key = "heading-${kind.apiValue}") {
+                            Text(
+                                text = kind.groupLabel,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                             )
+                        }
+
+                        items(group, key = { it.id }) { parent ->
+                            Column {
+                                CategoryCheckRow(
+                                    name = parent.name,
+                                    checked = state.selectedCategoryIds
+                                        ?.contains(parent.id) == true,
+                                    indent = 0.dp,
+                                    enabled = !state.isCreating,
+                                    onToggle = { onCategoryToggle(parent.id) },
+                                )
+                                childrenByParent[parent.id].orEmpty().forEach { child ->
+                                    CategoryCheckRow(
+                                        name = child.name,
+                                        checked = state.selectedCategoryIds
+                                            ?.contains(child.id) == true,
+                                        indent = 32.dp,
+                                        enabled = !state.isCreating,
+                                        onToggle = { onCategoryToggle(child.id) },
+                                    )
+                                }
+                            }
                         }
                     }
                 }

@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.abigailcandido.budgettracker.data.remote.CategoryKind
 import com.abigailcandido.budgettracker.data.remote.TrackerCategoryResponse
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -39,6 +40,7 @@ import com.abigailcandido.budgettracker.data.remote.TrackerCategoryResponse
 fun CategoryListScreen(
     trackerName: String,
     state: CategoryListUiState,
+    onKindSelected: (CategoryKind) -> Unit,
     onBack: () -> Unit,
     onAddTopLevelClick: () -> Unit,
     onAddSubcategoryClick: (TrackerCategoryResponse) -> Unit,
@@ -51,20 +53,25 @@ fun CategoryListScreen(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val kind = state.selectedKind
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
-            TopAppBar(
-                title = { Text(trackerName) },
-                navigationIcon = {
-                    TextButton(onClick = onBack) { Text("Back") }
-                },
-            )
+            Column {
+                TopAppBar(
+                    title = { Text(trackerName) },
+                    navigationIcon = {
+                        TextButton(onClick = onBack) { Text("Back") }
+                    },
+                )
+                CategoryKindTabs(selected = kind, onSelect = onKindSelected)
+            }
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onAddTopLevelClick,
-                text = { Text("Add category") },
+                text = { Text("Add ${kind.singular} category") },
                 icon = {},
             )
         },
@@ -85,7 +92,10 @@ fun CategoryListScreen(
             }
 
             state.parents.isEmpty() -> CenteredMessage(innerPadding) {
-                Text("No categories yet", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "No ${kind.singular} categories yet",
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = "Add one for this tracker only, or share it with " +
@@ -108,9 +118,16 @@ fun CategoryListScreen(
             ) {
                 item {
                     Text(
-                        text = "Switched on means $trackerName can file spending " +
-                                "under it. Switching one off changes this tracker " +
-                                "only.",
+                        text = when (kind) {
+                            CategoryKind.Expense ->
+                                "Switched on means $trackerName can file spending " +
+                                        "under it. Switching one off changes this " +
+                                        "tracker only."
+                            CategoryKind.Income ->
+                                "Switched on means $trackerName can record income " +
+                                        "under it. Switching one off changes this " +
+                                        "tracker only."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 4.dp),

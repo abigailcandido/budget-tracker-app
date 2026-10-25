@@ -56,7 +56,7 @@ fun AddCategoryScreen(
                         if (request is AddRequest.Subcategory) {
                             "Add under ${request.parentName}"
                         } else {
-                            "Add category"
+                            "Add ${state.selectedKind.singular} category"
                         }
                     )
                 },

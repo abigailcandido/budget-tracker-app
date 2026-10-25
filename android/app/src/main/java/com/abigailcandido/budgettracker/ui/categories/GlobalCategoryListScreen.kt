@@ -31,12 +31,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.abigailcandido.budgettracker.data.remote.CategoryKind
 import com.abigailcandido.budgettracker.data.remote.CategoryResponse
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlobalCategoryListScreen(
     state: GlobalCategoryListUiState,
+    onKindSelected: (CategoryKind) -> Unit,
     onBack: () -> Unit,
     onAddTopLevelClick: () -> Unit,
     onAddSubcategoryClick: (CategoryResponse) -> Unit,
@@ -48,20 +50,25 @@ fun GlobalCategoryListScreen(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val kind = state.selectedKind
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
-            TopAppBar(
-                title = { Text("Global categories") },
-                navigationIcon = {
-                    TextButton(onClick = onBack) { Text("Back") }
-                },
-            )
+            Column {
+                TopAppBar(
+                    title = { Text("Global categories") },
+                    navigationIcon = {
+                        TextButton(onClick = onBack) { Text("Back") }
+                    },
+                )
+                CategoryKindTabs(selected = kind, onSelect = onKindSelected)
+            }
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onAddTopLevelClick,
-                text = { Text("Add global category") },
+                text = { Text("Add global ${kind.singular} category") },
                 icon = {},
             )
         },
@@ -82,12 +89,22 @@ fun GlobalCategoryListScreen(
             }
 
             state.parents.isEmpty() -> CenteredMessage(innerPadding) {
-                Text("No categories yet", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "No ${kind.singular} categories yet",
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Categories are what you file spending under — " +
-                            "groceries, transport, bills. Add them here once " +
-                            "and every tracker can use them.",
+                    text = when (kind) {
+                        CategoryKind.Expense ->
+                            "Expense categories are what you file spending under — " +
+                                    "groceries, transport, bills. Add them here once " +
+                                    "and every tracker can use them."
+                        CategoryKind.Income ->
+                            "Income categories are where your money comes from — " +
+                                    "salary, allowance, freelance work. Add them here " +
+                                    "once and every tracker can use them."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
