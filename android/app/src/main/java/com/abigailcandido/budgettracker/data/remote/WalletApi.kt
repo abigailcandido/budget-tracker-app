@@ -20,6 +20,7 @@ class WalletApi(private val client: HttpClient = ApiClient.httpClient) {
         name: String,
         currency: String,
         openingBalance: String,
+        openingDate: String? = null,
     ): ApiResult<WalletResponse> =
         callReturningBody("Could not add the wallet") {
             client.post("trackers/$trackerId/wallets") {
@@ -29,6 +30,7 @@ class WalletApi(private val client: HttpClient = ApiClient.httpClient) {
                         name = name,
                         currency = currency,
                         openingBalance = openingBalance,
+                        openingDate = openingDate,
                     )
                 )
             }

@@ -4,6 +4,7 @@ import com.abigailcandido.budgettracker.data.local.TokenStore
 import com.abigailcandido.budgettracker.data.remote.ApiResult
 import com.abigailcandido.budgettracker.data.remote.WalletApi
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
+import java.time.LocalDate
 
 class WalletRepository(
     private val tokenStore: TokenStore,
@@ -26,6 +27,7 @@ class WalletRepository(
                 name = name.trim(),
                 currency = currency.trim().uppercase(),
                 openingBalance = openingBalance.ifBlank { "0" },
+                openingDate = LocalDate.now().toString(),
             )
         }
 

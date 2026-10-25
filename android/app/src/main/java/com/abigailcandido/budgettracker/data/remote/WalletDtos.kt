@@ -8,6 +8,7 @@ data class WalletCreateRequest(
     val name: String,
     val currency: String,
     @SerialName("opening_balance") val openingBalance: String,
+    @SerialName("opening_date") val openingDate: String? = null,
 )
 
 @Serializable
