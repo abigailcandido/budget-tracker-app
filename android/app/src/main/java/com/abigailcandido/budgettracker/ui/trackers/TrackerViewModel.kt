@@ -32,16 +32,17 @@ private const val CURRENCY_LENGTH = 3
 private val OPENING_BALANCE_PATTERN = Regex("^-?\\d*(\\.\\d{0,2})?$")
 
 /** The tabs under the wallets. Overview is the wallet table; the rest are entry lists. */
+/** The tabs under the wallets, in screen order. Overview is the wallet table; the rest are entry lists. */
 enum class EntryFilter(val label: String) {
-    All("All"),
-    Expenses("Expenses"),
+    Overview("Overview"),
+    All("All Transactions"),
     Income("Income"),
-    Overview("Overview");
+    Expenses("Expenses");
 
     fun matches(type: EntryType): Boolean = when (this) {
-        All, Overview -> true
-        Expenses -> type == EntryType.Expense
+        Overview, All -> true
         Income -> type == EntryType.Income
+        Expenses -> type == EntryType.Expense
     }
 }
 
@@ -54,7 +55,7 @@ data class TrackerUiState(
     val transactions: List<TransactionResponse> = emptyList(),
     val summary: TrackerSummaryResponse? = null,
     val selectedWalletId: Int? = null,
-    val filter: EntryFilter = EntryFilter.All,
+    val filter: EntryFilter = EntryFilter.Overview,
     val isCreateWalletOpen: Boolean = false,
     val newWalletName: String = "",
     val newWalletCurrency: String = DEFAULT_CURRENCY,

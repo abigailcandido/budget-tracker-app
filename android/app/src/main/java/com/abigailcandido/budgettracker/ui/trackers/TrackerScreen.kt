@@ -32,7 +32,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -57,6 +57,7 @@ import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
+import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -532,7 +533,12 @@ private fun EntryFilterTabs(
     selected: EntryFilter,
     onSelect: (EntryFilter) -> Unit,
 ) {
-    PrimaryTabRow(selectedTabIndex = selected.ordinal) {
+    // Scrollable, so "All Transactions" keeps its full name. Four fixed-width
+    // tabs on a narrow phone would cut it short.
+    PrimaryScrollableTabRow(
+        selectedTabIndex = selected.ordinal,
+        edgePadding = 0.dp,
+    ) {
         EntryFilter.entries.forEach { filter ->
             Tab(
                 selected = filter == selected,
@@ -556,7 +562,7 @@ private fun EntryList(
         CenteredMessage(modifier) {
             Text(
                 text = when (state.filter) {
-                    EntryFilter.All, EntryFilter.Overview -> "No entries"
+                    EntryFilter.All, EntryFilter.Overview -> "No transactions"
                     EntryFilter.Expenses -> "No expenses"
                     EntryFilter.Income -> "No income"
                 } + " in ${state.range.label}",
@@ -661,9 +667,11 @@ private fun EntryRow(
 }
 
 /**
- * Wallet | Opening | Income | Expenses | Ending, for the chosen range. Wider
- * than a phone held upright, so it scrolls sideways; the explanation below it
- * does not.
+ * One row per wallet for the chosen range. For a range that has already
+ * ended, the balance when it ended and the balance today are different
+ * figures, so both are shown. Otherwise they are the same, and only Current
+ * Balance appears. Wider than a phone held upright, so the table scrolls
+ * sideways; the explanation below it does not.
  */
 @Composable
 private fun OverviewTable(
@@ -688,6 +696,18 @@ private fun OverviewTable(
         return
     }
 
+    val rangeHasEnded = state.range.end.isBefore(LocalDate.now())
+    val currentBalances = state.wallets.associate { it.id to it.balance }
+
+    val headers = buildList {
+        add("Wallet")
+        add("Opening Balance")
+        add("Income")
+        add("Expenses")
+        if (rangeHasEnded) add("Ending Balance")
+        add("Current Balance")
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -699,52 +719,92 @@ private fun OverviewTable(
                 .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp),
         ) {
-            TableRow(
-                cells = listOf("Wallet", "Opening", "Income", "Expenses", "Ending"),
-                isHeader = true,
-            )
+            TableRow(cells = headers, isHeader = true)
             HorizontalDivider()
 
             summary.wallets.forEach { row ->
                 TableRow(
-                    cells = listOf(
-                        if (state.showsCurrency) "${row.walletName} (${row.currency})" else row.walletName,
-                        formatMoney(row.opening),
-                        dashIfZero(row.income),
-                        dashIfZero(row.expenses),
-                        formatMoney(row.ending),
+                    cells = balanceCells(
+                        label = if (state.showsCurrency) {
+                            "${row.walletName} (${row.currency})"
+                        } else {
+                            row.walletName
+                        },
+                        opening = row.opening,
+                        income = row.income,
+                        expenses = row.expenses,
+                        ending = row.ending,
+                        current = currentBalances[row.walletId] ?: row.ending,
+                        rangeHasEnded = rangeHasEnded,
                     ),
                     isBold = row.walletId == state.selectedWalletId,
-                    endingIsNegative = isNegative(row.ending),
                 )
                 HorizontalDivider()
             }
 
             // One total per currency: pesos and dollars are never added together.
             summary.totals.forEach { total ->
+                val currentTotal = summary.wallets
+                    .filter { it.currency == total.currency }
+                    .sumOf { row ->
+                        (currentBalances[row.walletId] ?: row.ending).toBigDecimalOrNull()
+                            ?: BigDecimal.ZERO
+                    }
+
                 TableRow(
-                    cells = listOf(
-                        if (summary.totals.size > 1) "Total ${total.currency}" else "Total",
-                        formatMoney(total.opening),
-                        dashIfZero(total.income),
-                        dashIfZero(total.expenses),
-                        formatMoney(total.ending),
+                    cells = balanceCells(
+                        label = if (summary.totals.size > 1) "Total ${total.currency}" else "Total",
+                        opening = total.opening,
+                        income = total.income,
+                        expenses = total.expenses,
+                        ending = total.ending,
+                        current = currentTotal.toPlainString(),
+                        rangeHasEnded = rangeHasEnded,
                     ),
                     isBold = true,
-                    endingIsNegative = isNegative(total.ending),
                 )
             }
         }
 
         Text(
-            text = "Opening is the balance at the start of " +
-                    "${state.range.start.asDayLabel()}, and Ending is the balance at " +
-                    "the end of ${state.range.end.asDayLabel()}. " +
-                    "Opening + Income − Expenses = Ending.",
+            text = if (rangeHasEnded) {
+                "Opening Balance is what each wallet held at the start of " +
+                        "${state.range.start.asDayLabel()}, and Ending Balance what it " +
+                        "held at the end of ${state.range.end.asDayLabel()}. " +
+                        "Opening + Income − Expenses = Ending. Current Balance is what " +
+                        "it holds today."
+            } else {
+                "Opening Balance is what each wallet held at the start of " +
+                        "${state.range.start.asDayLabel()}. " +
+                        "Opening + Income − Expenses = Current Balance."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp),
         )
+    }
+}
+
+/** The cells for one table row, with the Ending Balance column only for a finished range. */
+private fun balanceCells(
+    label: String,
+    opening: String,
+    income: String,
+    expenses: String,
+    ending: String,
+    current: String,
+    rangeHasEnded: Boolean,
+): List<String> = buildList {
+    add(label)
+    add(formatMoney(opening))
+    add(dashIfZero(income))
+    add(dashIfZero(expenses))
+    if (rangeHasEnded) {
+        add(formatMoney(ending))
+        add(formatMoney(current))
+    } else {
+        // For a range that reaches today, its ending balance is the current one.
+        add(formatMoney(ending))
     }
 }
 
@@ -753,9 +813,11 @@ private fun TableRow(
     cells: List<String>,
     isHeader: Boolean = false,
     isBold: Boolean = false,
-    endingIsNegative: Boolean = false,
 ) {
-    Row(modifier = Modifier.padding(vertical = 10.dp)) {
+    Row(
+        modifier = Modifier.padding(vertical = 10.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
         cells.forEachIndexed { index, text ->
             val isAmount = index > 0
             Text(
@@ -770,10 +832,12 @@ private fun TableRow(
                 fontWeight = if (isBold) FontWeight.Bold else null,
                 color = when {
                     isHeader -> MaterialTheme.colorScheme.onSurfaceVariant
-                    index == cells.lastIndex && endingIsNegative -> MaterialTheme.colorScheme.error
+                    // Any balance below zero, in whichever column it appears.
+                    isAmount && text.startsWith("−") -> MaterialTheme.colorScheme.error
                     else -> Color.Unspecified
                 },
-                maxLines = 1,
+                // Headers such as "Current Balance" may wrap onto two lines.
+                maxLines = if (isHeader) 2 else 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
