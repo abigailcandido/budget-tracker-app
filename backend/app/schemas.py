@@ -379,7 +379,12 @@ class TransactionResponse(BaseModel):
     description: str | None
     transaction_date: date
     created_at: datetime
-    
+    # Where this row sits in the entry's history. A correction names the
+    # version it replaced, a reversal names the version it cancels, and
+    # is_reversed marks a version that has since been corrected or deleted.
+    replaces_id: int | None = None
+    reverses_id: int | None = None
+    is_reversed: bool = False
 
 class WalletSummaryResponse(BaseModel):
     """One wallet's movement over a date range.

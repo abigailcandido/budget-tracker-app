@@ -515,7 +515,11 @@ def delete_category(
     if db.query(Transaction.id).filter(Transaction.category_id == category.id).first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Transactions already use this category, so it cannot be deleted",
+            # Deleted and corrected entries are kept as history, and still use it.
+            detail=(
+                "Transactions use this category, including deleted or corrected ones "
+                "kept as history, so it cannot be deleted. Switch it off instead"
+            ),
         )
 
     if db.query(RecurringRule.id).filter(RecurringRule.category_id == category.id).first():

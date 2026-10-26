@@ -2,7 +2,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.deps import get_current_user, get_db
 from app.models import TRANSACTION_OPENING, Transaction, User, Wallet
@@ -169,12 +169,17 @@ def delete_wallet(
     # The opening balance does not count: it was created automatically with
     # the wallet, and the app already warns before discarding the money in it.
     # Real income and expenses are history the user entered, so they have to
-    # be removed on purpose first.
+    # be deleted on purpose first. An entry that has already been deleted, or
+    # replaced by a correction, no longer counts.
+    reversal = aliased(Transaction)
     has_transactions = (
         db.query(Transaction.id)
+        .outerjoin(reversal, reversal.reverses_id == Transaction.id)
         .filter(
             Transaction.wallet_id == wallet.id,
             Transaction.type != TRANSACTION_OPENING,
+            Transaction.reverses_id.is_(None),
+            reversal.id.is_(None),
         )
         .first()
         is not None
@@ -185,6 +190,8 @@ def delete_wallet(
             detail="This wallet has transactions. Delete them before deleting the wallet",
         )
 
+    # The wallet's history goes with it. A correction that moved an entry into
+    # another wallet stays there, but loses its link to the version it replaced.
     db.query(Transaction).filter(Transaction.wallet_id == wallet.id).delete()
     db.delete(wallet)
     db.commit()

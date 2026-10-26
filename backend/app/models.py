@@ -137,6 +137,26 @@ class Transaction(Base):
     is_edited_instance: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # An entry is never changed once recorded, so its history can always be
+    # audited. Correcting it adds a reversal that cancels it plus the corrected
+    # entry; deleting it adds only the reversal. These three columns tie the
+    # rows of one entry's history together.
+    #
+    # reverses_id: on a reversal, the entry it cancels. Unique, because an
+    # entry can only ever be cancelled once.
+    reverses_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, unique=True, index=True
+    )
+    # replaces_id: on a corrected entry, the version it replaced.
+    replaces_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # origin_id: on every reversal and correction, the first version of the
+    # entry, so a whole history can be fetched at once. Empty on an original.
+    origin_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
 
 class BudgetLimit(Base):
     __tablename__ = "budget_limits"

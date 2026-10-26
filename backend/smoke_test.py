@@ -496,6 +496,9 @@ def main() -> None:
         _, body = call("GET", f"/wallets/{wallet_id}", token_a)
         return (body or {}).get("balance")
 
+    def id_of(row):
+        return (row or {}).get("id")
+    
     today = date.today()
 
     status, rows = call("GET", f"/trackers/{one}/transactions", token_a)
@@ -587,40 +590,49 @@ def main() -> None:
     check("an expense larger than the balance is allowed", status, 201)
     check("and the balance goes below zero", balance_of(wallet["id"]), "-749.50")
 
-    status, _ = call("PATCH", f"/transactions/{bill['id']}", token_a, {"amount": "200.00"})
+    # A correction never changes the entry it corrects. It adds a reversal
+    # that cancels it and a corrected entry, which comes back with a new id.
+    status, bill_v2 = call("PATCH", f"/transactions/{bill['id']}", token_a, {"amount": "200.00"})
     check("correct an amount", status, 200)
+    check("the correction is a new entry", id_of(bill_v2) not in (None, bill["id"]), True)
+    check("which says what it replaced", (bill_v2 or {}).get("replaces_id"), bill["id"])
     check("the balance follows the correction", balance_of(wallet["id"]), "1050.50")
 
-    status, _ = call("PATCH", f"/transactions/{bill['id']}", token_a, {"wallet_id": bank["id"]})
+    status, _ = call("PATCH", f"/transactions/{bill['id']}", token_a, {"amount": "150.00"})
+    check("an entry that was already corrected cannot be corrected again", status, 409)
+
+    status, bill_v3 = call(
+        "PATCH", f"/transactions/{id_of(bill_v2)}", token_a, {"wallet_id": bank["id"]}
+    )
     check("move a transaction to another wallet", status, 200)
     check("the old wallet gets the money back", balance_of(wallet["id"]), "1250.50")
     check("the new wallet is charged", balance_of(bank["id"]), "29800.00")
 
     status, _ = call(
-        "PATCH", f"/transactions/{bill['id']}", token_a, {"wallet_id": cash_two["id"]}
+        "PATCH", f"/transactions/{id_of(bill_v3)}", token_a, {"wallet_id": cash_two["id"]}
     )
     check("moving to a wallet in another tracker is refused", status, 409)
 
-    status, _ = call("PATCH", f"/transactions/{bill['id']}", token_a, {"type": "income"})
+    status, _ = call("PATCH", f"/transactions/{id_of(bill_v3)}", token_a, {"type": "income"})
     check("becoming an income without an income category is refused", status, 409)
 
-    status, _ = call(
+    status, bill_v4 = call(
         "PATCH",
-        f"/transactions/{bill['id']}",
+        f"/transactions/{id_of(bill_v3)}",
         token_a,
         {"type": "income", "category_id": salary["id"]},
     )
     check("change an expense into an income", status, 200)
     check("the balance swings the other way", balance_of(bank["id"]), "30200.00")
 
-    status, cleared = call(
+    status, groceries_v2 = call(
         "PATCH", f"/transactions/{groceries_run['id']}", token_a, {"description": None}
     )
-    check("clear a description", (status, (cleared or {}).get("description")), (200, None))
+    check("clear a description", (status, (groceries_v2 or {}).get("description")), (200, None))
 
     call("DELETE", f"/trackers/{one}/categories/{groceries['id']}", token_a)
-    status, _ = call(
-        "PATCH", f"/transactions/{groceries_run['id']}", token_a, {"amount": "300.00"}
+    status, groceries_v3 = call(
+        "PATCH", f"/transactions/{id_of(groceries_v2)}", token_a, {"amount": "300.00"}
     )
     check("an entry keeps a category that was switched off later", status, 200)
     call("PUT", f"/trackers/{one}/categories/{groceries['id']}", token_a)
@@ -629,12 +641,19 @@ def main() -> None:
     status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={wallet['id']}", token_a)
     opening = next((row for row in rows or [] if row["type"] == "opening"), {})
 
-    status, _ = call("PATCH", f"/transactions/{opening.get('id')}", token_a, {"amount": "1000.00"})
+    status, opening_v2 = call(
+        "PATCH", f"/transactions/{opening.get('id')}", token_a, {"amount": "1000.00"}
+    )
     check("correct an opening balance", status, 200)
     check("the balance follows the opening balance", balance_of(wallet["id"]), "700.00")
 
-    status, _ = call("PATCH", f"/transactions/{opening.get('id')}", token_a, {"type": "expense"})
+    status, _ = call(
+        "PATCH", f"/transactions/{id_of(opening_v2)}", token_a, {"type": "expense"}
+    )
     check("an opening balance cannot change type", status, 409)
+
+    status, same = call("PATCH", f"/transactions/{pay['id']}", token_a, {"amount": "30000.00"})
+    check("saving without a change adds nothing", (status, id_of(same)), (200, pay["id"]))
 
     status, rows = call("GET", f"/trackers/{one}/transactions", token_a)
     check(
@@ -642,13 +661,90 @@ def main() -> None:
         [(row["type"], row["amount"]) for row in rows or []],
         [("income", "200.00"), ("income", "30000.00"), ("expense", "300.00"), ("opening", "1000.00")],
     )
+    check(
+        "only the latest version of each entry is listed",
+        [row["id"] for row in rows or []],
+        [id_of(bill_v4), pay["id"], id_of(groceries_v3), id_of(opening_v2)],
+    )
 
     status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={bank['id']}", token_a)
     check("list one wallet's transactions", [row["amount"] for row in rows or []], ["200.00", "30000.00"])
 
-    status, _ = call("DELETE", f"/transactions/{groceries_run['id']}", token_a)
+    status, _ = call("DELETE", f"/transactions/{id_of(groceries_v3)}", token_a)
     check("delete a transaction", status, 204)
     check("its amount returns to the wallet", balance_of(wallet["id"]), "1000.00")
+
+    status, _ = call("DELETE", f"/transactions/{id_of(groceries_v3)}", token_a)
+    check("a deleted transaction cannot be deleted again", status, 409)
+
+    print("\nAdjustments")
+
+    status, history = call("GET", f"/transactions/{id_of(bill_v4)}/history", token_a)
+    check(
+        "an entry's history holds every version and every reversal, oldest first",
+        [
+            (row["type"], row["amount"], row["is_reversed"], row["reverses_id"] is not None)
+            for row in history or []
+        ],
+        [
+            ("expense", "2000.00", True, False),
+            ("expense", "-2000.00", False, True),
+            ("expense", "200.00", True, False),
+            ("expense", "-200.00", False, True),
+            ("expense", "200.00", True, False),
+            ("expense", "-200.00", False, True),
+            ("income", "200.00", False, False),
+        ],
+    )
+    check(
+        "a reversal takes the date and wallet of the entry it cancels",
+        [(row["transaction_date"], row["wallet_name"]) for row in (history or [])[:2]],
+        [(bill["transaction_date"], "Cash")] * 2,
+    )
+
+    status, from_original = call("GET", f"/transactions/{bill['id']}/history", token_a)
+    check(
+        "the same history comes back from any of its versions",
+        [row["id"] for row in from_original or []],
+        [row["id"] for row in history or []],
+    )
+
+    reversal_id = (history or [{}, {}])[1].get("id")
+    status, _ = call("PATCH", f"/transactions/{reversal_id}", token_a, {"amount": "1.00"})
+    check("a reversal cannot be corrected", status, 409)
+
+    status, _ = call("DELETE", f"/transactions/{reversal_id}", token_a)
+    check("a reversal cannot be deleted", status, 409)
+
+    status, deleted = call("GET", f"/transactions/{id_of(groceries_v3)}", token_a)
+    check("a deleted entry is kept, marked as reversed", (deleted or {}).get("is_reversed"), True)
+
+    status, rows = call(
+        "GET", f"/trackers/{one}/transactions?wallet_id={wallet['id']}&include_adjustments=true", token_a
+    )
+    check(
+        "the full record can still be listed on request",
+        len(rows or []),
+        # Groceries: three versions and three reversals. Opening: two and one.
+        # The bill's first two versions and their reversals were in Cash too.
+        6 + 3 + 4,
+    )
+
+    status, spare = call(
+        "POST",
+        f"/trackers/{one}/wallets",
+        token_a,
+        {"name": "Spare", "currency": "PHP", "opening_balance": "0.00"},
+    )
+    status, mistake = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {**expense, "wallet_id": id_of(spare), "amount": "5.00"},
+    )
+    call("DELETE", f"/transactions/{id_of(mistake)}", token_a)
+    status, _ = call("DELETE", f"/wallets/{id_of(spare)}", token_a)
+    check("a wallet whose entries were all deleted can be deleted", status, 204)
 
     status, _ = call("DELETE", f"/categories/{salary['id']}", token_a)
     check("a category with transactions cannot be deleted", status, 409)
@@ -777,6 +873,9 @@ def main() -> None:
 
     status, _ = call("PATCH", f"/transactions/{pay['id']}", token_b, {"amount": "1.00"})
     check("another account's transaction cannot be changed", status, 404)
+    
+    status, _ = call("GET", f"/transactions/{pay['id']}/history", token_b)
+    check("another account's transaction history is not found", status, 404)
 
     status, _ = call("GET", f"/trackers/{one}/transactions", token_b)
     check("another account's transactions cannot be listed", status, 404)

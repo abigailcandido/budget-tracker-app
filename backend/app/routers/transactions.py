@@ -3,13 +3,20 @@
 Every change to a transaction changes its wallet's balance in the same
 database transaction, so the cached balance and the transaction log can never
 disagree: either both are saved or neither is.
+
+An entry is never changed or removed once recorded, so its history can always
+be audited. Correcting an entry adds a reversal, which cancels it, and the
+corrected entry; deleting an entry adds only the reversal. A reversal is a copy
+of the entry with the amount negated and the same date, so every total that
+adds up amounts by kind, category, wallet or date stays right without knowing
+about adjustments at all.
 """
 
 from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, case, func
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session, aliased
 
 from app.deps import get_current_user, get_db
@@ -42,6 +49,8 @@ from app.schemas import (
 router = APIRouter(tags=["transactions"])
 
 ParentCategory = aliased(Category)
+# The reversal that cancels a transaction, if there is one.
+Reversal = aliased(Transaction)
 
 
 # --------------------------------------------------------------------------
@@ -144,13 +153,62 @@ def _check_category(
     return category
 
 
+def _require_current(transaction: Transaction, db: Session) -> None:
+    """Only the latest version of an entry can be corrected or deleted.
+
+    Older versions and reversals are history. Changing them would rewrite the
+    record the reversals exist to keep.
+    """
+    if transaction.reverses_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A reversal is part of an entry's history and cannot be changed",
+        )
+
+    already_reversed = (
+        db.query(Transaction.id).filter(Transaction.reverses_id == transaction.id).first()
+        is not None
+    )
+    if already_reversed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This entry has already been corrected or deleted. Open its latest version instead",
+        )
+
+
+def _reverse(transaction: Transaction, wallets: dict[int, Wallet]) -> Transaction:
+    """A reversal that cancels this transaction, applied to its wallet's balance.
+
+    It carries the same date, wallet and category as the entry it cancels, so
+    the period, wallet and category that entry counted towards all go back to
+    what they would have been without it.
+    """
+    reversal = Transaction(
+        user_id=transaction.user_id,
+        wallet_id=transaction.wallet_id,
+        category_id=transaction.category_id,
+        recurring_rule_id=transaction.recurring_rule_id,
+        source_main_tracker_id=transaction.source_main_tracker_id,
+        amount=-transaction.amount,
+        type=transaction.type,
+        description=transaction.description,
+        transaction_date=transaction.transaction_date,
+        reverses_id=transaction.id,
+        origin_id=transaction.origin_id or transaction.id,
+    )
+    wallets[transaction.wallet_id].balance += _effect(reversal.type, reversal.amount)
+    return reversal
+
+
 def _described(db: Session):
-    """A query returning each transaction with its wallet and category names."""
+    """A query returning each transaction with its wallet and category names,
+    and the id of the reversal that cancelled it, if any."""
     return (
-        db.query(Transaction, Wallet, Category, ParentCategory)
+        db.query(Transaction, Wallet, Category, ParentCategory, Reversal.id)
         .join(Wallet, Transaction.wallet_id == Wallet.id)
         .outerjoin(Category, Transaction.category_id == Category.id)
         .outerjoin(ParentCategory, Category.parent_id == ParentCategory.id)
+        .outerjoin(Reversal, Reversal.reverses_id == Transaction.id)
     )
 
 
@@ -159,6 +217,7 @@ def _to_response(
     wallet: Wallet,
     category: Category | None,
     parent: Category | None,
+    reversal_id: int | None,
 ) -> TransactionResponse:
     return TransactionResponse(
         id=transaction.id,
@@ -173,6 +232,9 @@ def _to_response(
         description=transaction.description,
         transaction_date=transaction.transaction_date,
         created_at=transaction.created_at,
+        replaces_id=transaction.replaces_id,
+        reverses_id=transaction.reverses_id,
+        is_reversed=reversal_id is not None,
     )
 
 
@@ -187,7 +249,7 @@ def _reject_backwards_range(start_date: date | None, end_date: date | None) -> N
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="The start date must be on or before the end date",
         )
-    
+
 
 # --------------------------------------------------------------------------
 # Endpoints
@@ -242,6 +304,14 @@ def list_transactions(
     wallet_id: int | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
+    include_adjustments: bool = Query(
+        default=False,
+        description=(
+            "Also list versions that were corrected or deleted, and the "
+            "reversals that cancelled them. Normally only the latest version "
+            "of each entry is listed."
+        ),
+    ),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
@@ -251,6 +321,9 @@ def list_transactions(
     tracker = get_owned_tracker(tracker_id, user, db)
 
     query = _described(db).filter(Wallet.main_tracker_id == tracker.id)
+
+    if not include_adjustments:
+        query = query.filter(Transaction.reverses_id.is_(None), Reversal.id.is_(None))
 
     # Both ends are included, so a range of one day is start_date == end_date.
     if start_date is not None:
@@ -273,7 +346,10 @@ def list_transactions(
             # On the day a wallet was opened, its opening balance came first,
             # so in a newest-first list it sits below everything else that day.
             case((Transaction.type == TRANSACTION_OPENING, 1), else_=0),
-            Transaction.created_at.desc(),
+            # A correction keeps the place of the entry it replaced, so fixing
+            # an amount never moves the entry up the list. With adjustments
+            # included, an entry's versions sit together, newest first.
+            func.coalesce(Transaction.origin_id, Transaction.id).desc(),
             Transaction.id.desc(),
         )
         .offset(offset)
@@ -282,6 +358,7 @@ def list_transactions(
     )
 
     return [_to_response(*row) for row in rows]
+
 
 @router.get(
     "/trackers/{tracker_id}/summary",
@@ -386,6 +463,7 @@ def tracker_summary(
         ],
     )
 
+
 @router.get(
     "/transactions/{transaction_id}",
     response_model=TransactionResponse,
@@ -400,10 +478,40 @@ def get_transaction(
     return _load_response(transaction.id, db)
 
 
+@router.get(
+    "/transactions/{transaction_id}/history",
+    response_model=list[TransactionResponse],
+    summary="Every version of an entry and every reversal, oldest first",
+)
+def transaction_history(
+    transaction_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TransactionResponse]:
+    transaction = get_owned_transaction(transaction_id, user, db)
+    origin_id = transaction.origin_id or transaction.id
+
+    rows = (
+        _described(db)
+        .filter(
+            Transaction.user_id == user.id,
+            or_(Transaction.id == origin_id, Transaction.origin_id == origin_id),
+        )
+        .order_by(Transaction.id)
+        .all()
+    )
+    return [_to_response(*row) for row in rows]
+
+
 @router.patch(
     "/transactions/{transaction_id}",
     response_model=TransactionResponse,
     summary="Correct a transaction",
+    description=(
+        "The entry itself is left as it was. A reversal that cancels it and "
+        "the corrected entry are added instead, and the corrected entry is "
+        "returned. Its id is new."
+    ),
 )
 def update_transaction(
     transaction_id: int,
@@ -412,6 +520,7 @@ def update_transaction(
     db: Session = Depends(get_db),
 ) -> TransactionResponse:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
+    _require_current(transaction, db)
     is_opening = transaction.type == TRANSACTION_OPENING
 
     old_wallet = get_owned_wallet(transaction.wallet_id, user, db)
@@ -488,31 +597,63 @@ def update_transaction(
                 must_be_switched_on=category_changed,
             )
 
+    new_date = (
+        payload.transaction_date
+        if payload.transaction_date is not None
+        else transaction.transaction_date
+    )
+    # Left out means "leave it"; sent as null means "clear it".
+    new_description = (
+        payload.description
+        if "description" in payload.model_fields_set
+        else transaction.description
+    )
+
+    # Saving without changing anything adds nothing, so the history only ever
+    # records real corrections.
+    unchanged = (
+        new_wallet.id == transaction.wallet_id
+        and new_type == transaction.type
+        and new_amount == transaction.amount
+        and new_category_id == transaction.category_id
+        and new_date == transaction.transaction_date
+        and new_description == transaction.description
+    )
+    if unchanged:
+        return _load_response(transaction.id, db)
+
     wallets = _lock_wallets({old_wallet.id, new_wallet.id}, db)
-    wallets[old_wallet.id].balance -= _effect(transaction.type, transaction.amount)
+    reversal = _reverse(transaction, wallets)
+
+    correction = Transaction(
+        user_id=user.id,
+        wallet_id=new_wallet.id,
+        category_id=new_category_id,
+        recurring_rule_id=transaction.recurring_rule_id,
+        source_main_tracker_id=transaction.source_main_tracker_id,
+        amount=new_amount,
+        type=new_type,
+        description=new_description,
+        transaction_date=new_date,
+        replaces_id=transaction.id,
+        origin_id=transaction.origin_id or transaction.id,
+    )
     wallets[new_wallet.id].balance += _effect(new_type, new_amount)
 
-    transaction.wallet_id = new_wallet.id
-    transaction.type = new_type
-    transaction.amount = new_amount
-    transaction.category_id = new_category_id
-
-    if payload.transaction_date is not None:
-        transaction.transaction_date = payload.transaction_date
-
-    # Left out means "leave it"; sent as null means "clear it".
-    if "description" in payload.model_fields_set:
-        transaction.description = payload.description
-
+    db.add_all([reversal, correction])
     db.commit()
 
-    return _load_response(transaction.id, db)
+    return _load_response(correction.id, db)
 
 
 @router.delete(
     "/transactions/{transaction_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a transaction",
+    description=(
+        "The entry is kept as history. A reversal that cancels it is added, "
+        "and the entry no longer appears in the tracker's list."
+    ),
 )
 def delete_transaction(
     transaction_id: int,
@@ -520,9 +661,8 @@ def delete_transaction(
     db: Session = Depends(get_db),
 ) -> None:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
+    _require_current(transaction, db)
 
     wallets = _lock_wallets({transaction.wallet_id}, db)
-    wallets[transaction.wallet_id].balance -= _effect(transaction.type, transaction.amount)
-
-    db.delete(transaction)
+    db.add(_reverse(transaction, wallets))
     db.commit()
