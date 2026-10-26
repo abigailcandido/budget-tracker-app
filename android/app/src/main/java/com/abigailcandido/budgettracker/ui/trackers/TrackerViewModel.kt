@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.TransactionRepository
 import com.abigailcandido.budgettracker.data.WalletRepository
 import com.abigailcandido.budgettracker.data.remote.ApiResult
@@ -31,7 +32,6 @@ private const val CURRENCY_LENGTH = 3
  */
 private val OPENING_BALANCE_PATTERN = Regex("^-?\\d*(\\.\\d{0,2})?$")
 
-/** The tabs under the wallets. Overview is the wallet table; the rest are entry lists. */
 /** The tabs under the wallets, in screen order. Overview is the wallet table; the rest are entry lists. */
 enum class EntryFilter(val label: String) {
     Overview("Overview"),
@@ -64,6 +64,8 @@ data class TrackerUiState(
     val createWalletError: String? = null,
     val pendingDeleteWalletId: Int? = null,
     val actionError: String? = null,
+    /** The add-or-edit page's form while that page is open, otherwise null. */
+    val entryForm: EntryForm? = null,
 ) {
     val selectedWallet: WalletResponse?
         get() = wallets.firstOrNull { it.id == selectedWalletId }
@@ -88,6 +90,7 @@ data class TrackerUiState(
 class TrackerViewModel(
     private val trackerId: Int,
     private val walletRepository: WalletRepository,
+    private val categoryRepository: CategoryRepository,
     private val transactionRepository: TransactionRepository,
 ) : ViewModel() {
 
@@ -100,6 +103,9 @@ class TrackerViewModel(
      * never arrive late and overwrite the month on screen.
      */
     private var loadJob: Job? = null
+
+    /** The entry form's category load, cancelled if the form is closed or reopened. */
+    private var categoryJob: Job? = null
 
     init {
         refresh()
@@ -289,13 +295,247 @@ class TrackerViewModel(
         _uiState.update { it.copy(actionError = null) }
     }
 
+    // ---- The add-or-edit transaction page ----
+
+    /**
+     * Opens a blank form. It starts as an income on the Income tab and an
+     * expense everywhere else, in the selected wallet or else the first one,
+     * dated today, or the last day of the period showing if that is over.
+     */
+    fun onAddEntryClick() {
+        val current = _uiState.value
+        val wallet = current.selectedWallet ?: current.wallets.firstOrNull() ?: return
+        val today = LocalDate.now()
+
+        _uiState.update {
+            it.copy(
+                entryForm = EntryForm(
+                    type = if (current.filter == EntryFilter.Income) {
+                        EntryType.Income
+                    } else {
+                        EntryType.Expense
+                    },
+                    walletId = wallet.id,
+                    date = if (current.range.end.isBefore(today)) current.range.end else today,
+                ),
+            )
+        }
+        loadEntryCategories(keepId = null)
+    }
+
+    /** Opens the form filled in with an existing entry, ready to correct. */
+    fun onEntryClick(entry: TransactionResponse) {
+        val type = entry.entryType
+
+        _uiState.update {
+            it.copy(
+                entryForm = EntryForm(
+                    editingId = entry.id,
+                    type = type,
+                    walletId = entry.walletId,
+                    currency = entry.currency,
+                    categoryId = entry.categoryId,
+                    originalCategoryId = entry.categoryId,
+                    amount = entry.amount,
+                    date = runCatching { LocalDate.parse(entry.transactionDate) }
+                        .getOrDefault(LocalDate.now()),
+                    note = entry.description.orEmpty(),
+                ),
+            )
+        }
+
+        // An opening balance has no category, so there is nothing to load.
+        if (type != EntryType.Opening) loadEntryCategories(keepId = entry.categoryId)
+    }
+
+    fun retryEntryCategories() {
+        loadEntryCategories(keepId = _uiState.value.entryForm?.originalCategoryId)
+    }
+
+    fun onEntryTypeChange(type: EntryType) {
+        updateForm { form ->
+            if (form.isOpening || type == EntryType.Opening) {
+                form
+            } else {
+                form.copy(
+                    type = type,
+                    // An expense category can't come along to an income, or the
+                    // other way round, so the choice is cleared when it doesn't fit.
+                    categoryId = form.categoryId?.takeIf { id ->
+                        form.categoriesFor(type).any { it.id == id }
+                    },
+                    error = null,
+                )
+            }
+        }
+    }
+
+    fun onEntryWalletChange(walletId: Int) {
+        updateForm { form ->
+            if (form.isOpening) form else form.copy(walletId = walletId, error = null)
+        }
+    }
+
+    fun onEntryCategoryChange(categoryId: Int) {
+        updateForm { it.copy(categoryId = categoryId, error = null) }
+    }
+
+    fun onEntryAmountChange(value: String) {
+        updateForm { form ->
+            if (form.acceptsAmount(value)) form.copy(amount = value, error = null) else form
+        }
+    }
+
+    fun onEntryDateChange(date: LocalDate) {
+        // The date picker already blocks future days; this is a second lock.
+        if (date.isAfter(LocalDate.now())) return
+        updateForm { it.copy(date = date, error = null) }
+    }
+
+    fun onEntryNoteChange(value: String) {
+        updateForm { it.copy(note = value.take(NOTE_MAX_LENGTH), error = null) }
+    }
+
+    fun saveEntry() {
+        val form = _uiState.value.entryForm ?: return
+        val walletId = form.walletId ?: return
+        if (!form.canSave) return
+
+        viewModelScope.launch {
+            updateForm { it.copy(isSaving = true, error = null) }
+
+            val editingId = form.editingId
+            val categoryId = form.categoryId
+            val date = form.date.toString()
+
+            val result = when {
+                // An opening balance keeps its wallet and has no type or category,
+                // so those are left out of the correction altogether.
+                editingId != null && form.isOpening -> transactionRepository.update(
+                    transactionId = editingId,
+                    walletId = null,
+                    type = null,
+                    categoryId = null,
+                    amount = form.amount,
+                    date = date,
+                    description = form.note,
+                )
+
+                editingId != null -> transactionRepository.update(
+                    transactionId = editingId,
+                    walletId = walletId,
+                    type = form.type,
+                    categoryId = categoryId,
+                    amount = form.amount,
+                    date = date,
+                    description = form.note,
+                )
+
+                categoryId != null -> transactionRepository.create(
+                    walletId = walletId,
+                    type = form.type,
+                    amount = form.amount,
+                    categoryId = categoryId,
+                    date = date,
+                    description = form.note,
+                )
+
+                // canSave already guarantees a category, so this never happens.
+                else -> ApiResult.Failure("Choose a category")
+            }
+
+            when (result) {
+                is ApiResult.Success -> closeEntryFormAndRefresh()
+                is ApiResult.Failure -> updateForm {
+                    it.copy(isSaving = false, error = result.message)
+                }
+            }
+        }
+    }
+
+    fun onDeleteEntryClick() {
+        updateForm { it.copy(isConfirmingDelete = true) }
+    }
+
+    fun onDismissDeleteEntry() {
+        updateForm { it.copy(isConfirmingDelete = false) }
+    }
+
+    fun confirmDeleteEntry() {
+        val editingId = _uiState.value.entryForm?.editingId ?: return
+
+        viewModelScope.launch {
+            updateForm { it.copy(isConfirmingDelete = false, isDeleting = true, error = null) }
+
+            when (val result = transactionRepository.delete(editingId)) {
+                is ApiResult.Success -> closeEntryFormAndRefresh()
+                is ApiResult.Failure -> updateForm {
+                    it.copy(isDeleting = false, error = result.message)
+                }
+            }
+        }
+    }
+
+    /** Cancel, or the back gesture. Ignored while a save or delete is on its way. */
+    fun onDismissEntryForm() {
+        if (_uiState.value.entryForm?.isBusy == true) return
+        categoryJob?.cancel()
+        _uiState.update { it.copy(entryForm = null) }
+    }
+
+    /**
+     * Loads every category the tracker can see, switched on or not, and keeps
+     * the ones an entry can use. They are fetched each time the page opens,
+     * so a category added a moment ago on the Categories screen is there.
+     */
+    private fun loadEntryCategories(keepId: Int?) {
+        categoryJob?.cancel()
+        updateForm { it.copy(isLoadingCategories = true, categoryLoadError = null) }
+
+        categoryJob = viewModelScope.launch {
+            when (val result = categoryRepository.listForTracker(trackerId)) {
+                is ApiResult.Success -> updateForm {
+                    it.copy(
+                        isLoadingCategories = false,
+                        categories = categoryOptions(result.data, keepId),
+                    )
+                }
+                is ApiResult.Failure -> updateForm {
+                    it.copy(isLoadingCategories = false, categoryLoadError = result.message)
+                }
+            }
+        }
+    }
+
+    private fun closeEntryFormAndRefresh() {
+        _uiState.update { it.copy(entryForm = null) }
+        // Balances, lists and the overview all change with an entry.
+        refresh()
+    }
+
+    /** Changes the form if it is open, and does nothing if it has been closed. */
+    private fun updateForm(transform: (EntryForm) -> EntryForm) {
+        _uiState.update { state ->
+            val form = state.entryForm ?: return@update state
+            state.copy(entryForm = transform(form))
+        }
+    }
+
     companion object {
         fun factory(
             trackerId: Int,
             walletRepository: WalletRepository,
+            categoryRepository: CategoryRepository,
             transactionRepository: TransactionRepository,
         ) = viewModelFactory {
-            initializer { TrackerViewModel(trackerId, walletRepository, transactionRepository) }
+            initializer {
+                TrackerViewModel(
+                    trackerId,
+                    walletRepository,
+                    categoryRepository,
+                    transactionRepository,
+                )
+            }
         }
     }
 }

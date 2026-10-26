@@ -40,6 +40,7 @@ import com.abigailcandido.budgettracker.ui.categories.AddCategoryScreen
 import com.abigailcandido.budgettracker.ui.categories.AddGlobalCategoryScreen
 import com.abigailcandido.budgettracker.ui.home.HomeScreen
 import com.abigailcandido.budgettracker.ui.navigation.CategoryList
+import com.abigailcandido.budgettracker.ui.navigation.EntryEdit
 import com.abigailcandido.budgettracker.ui.navigation.Home
 import com.abigailcandido.budgettracker.ui.navigation.TrackerDetail
 import com.abigailcandido.budgettracker.ui.navigation.GlobalCategories
@@ -51,6 +52,7 @@ import com.abigailcandido.budgettracker.ui.pin.PinEntryScreen
 import com.abigailcandido.budgettracker.ui.pin.PinSetupScreen
 import com.abigailcandido.budgettracker.ui.pin.PinViewModel
 import com.abigailcandido.budgettracker.ui.theme.BudgetTrackerTheme
+import com.abigailcandido.budgettracker.ui.trackers.EntryEditScreen
 import com.abigailcandido.budgettracker.ui.trackers.NewTrackerScreen
 import com.abigailcandido.budgettracker.ui.trackers.TrackerListViewModel
 import com.abigailcandido.budgettracker.ui.trackers.TrackerScreen
@@ -297,6 +299,7 @@ private fun SignedInNavHost(
                 factory = TrackerViewModel.factory(
                     route.trackerId,
                     walletRepository,
+                    categoryRepository,
                     transactionRepository,
                 ),
             )
@@ -326,7 +329,62 @@ private fun SignedInNavHost(
                 onDismissDeleteWallet = trackerViewModel::onDismissDeleteWallet,
                 onDismissActionError = trackerViewModel::onDismissActionError,
                 onRetry = trackerViewModel::retry,
+                onAddEntryClick = {
+                    trackerViewModel.onAddEntryClick()
+                    // Single top, so a double tap can't open the page twice.
+                    navController.navigate(EntryEdit(route.trackerId)) { launchSingleTop = true }
+                },
+                onEntryClick = { entry ->
+                    trackerViewModel.onEntryClick(entry)
+                    navController.navigate(EntryEdit(route.trackerId)) { launchSingleTop = true }
+                },
             )
+        }
+
+        composable<EntryEdit> { entry ->
+            val route: EntryEdit = entry.toRoute()
+            // The page borrows the tracker screen's ViewModel instead of having its
+            // own, so saving updates the very balances and lists the user goes back to.
+            val trackerEntry = remember(entry) { navController.getBackStackEntry<TrackerDetail>() }
+            val trackerViewModel: TrackerViewModel = viewModel(
+                viewModelStoreOwner = trackerEntry,
+                factory = TrackerViewModel.factory(
+                    route.trackerId,
+                    walletRepository,
+                    categoryRepository,
+                    transactionRepository,
+                ),
+            )
+            val trackerState by trackerViewModel.uiState.collectAsState()
+            val form = trackerState.entryForm
+
+            // The ViewModel closes the form after a save or a delete, or on Cancel.
+            // Either way the page has nothing left to show, so it closes too.
+            val isFormOpen = form != null
+            LaunchedEffect(isFormOpen) {
+                if (!isFormOpen) {
+                    navController.popBackStack<EntryEdit>(inclusive = true)
+                }
+            }
+
+            if (form != null) {
+                EntryEditScreen(
+                    form = form,
+                    wallets = trackerState.wallets,
+                    onTypeChange = trackerViewModel::onEntryTypeChange,
+                    onWalletChange = trackerViewModel::onEntryWalletChange,
+                    onCategoryChange = trackerViewModel::onEntryCategoryChange,
+                    onAmountChange = trackerViewModel::onEntryAmountChange,
+                    onDateChange = trackerViewModel::onEntryDateChange,
+                    onNoteChange = trackerViewModel::onEntryNoteChange,
+                    onRetryCategories = trackerViewModel::retryEntryCategories,
+                    onSave = trackerViewModel::saveEntry,
+                    onDeleteClick = trackerViewModel::onDeleteEntryClick,
+                    onConfirmDelete = trackerViewModel::confirmDeleteEntry,
+                    onDismissDelete = trackerViewModel::onDismissDeleteEntry,
+                    onCancel = trackerViewModel::onDismissEntryForm,
+                )
+            }
         }
 
         composable<CategoryList> { backStackEntry ->

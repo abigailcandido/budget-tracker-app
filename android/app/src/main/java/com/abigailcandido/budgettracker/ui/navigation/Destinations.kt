@@ -34,3 +34,8 @@ data class CategoryAdd(
     val trackerId: Int,
     val trackerName: String,
 )
+
+@Serializable
+data class EntryEdit(
+    val trackerId: Int,
+)

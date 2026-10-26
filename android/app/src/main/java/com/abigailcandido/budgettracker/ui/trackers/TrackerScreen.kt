@@ -1,5 +1,6 @@
 package com.abigailcandido.budgettracker.ui.trackers
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +28,7 @@ import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -90,6 +92,8 @@ fun TrackerScreen(
     onDismissDeleteWallet: () -> Unit,
     onDismissActionError: () -> Unit,
     onRetry: () -> Unit,
+    onAddEntryClick: () -> Unit,
+    onEntryClick: (TransactionResponse) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showCustomRange by remember { mutableStateOf(false) }
@@ -106,6 +110,14 @@ fun TrackerScreen(
                     TextButton(onClick = onOpenCategories) { Text("Categories") }
                 },
             )
+        },
+        floatingActionButton = {
+            // Only once the screen has loaded and there is a wallet to put an entry in.
+            if (!state.isLoading && state.errorMessage == null && state.wallets.isNotEmpty()) {
+                ExtendedFloatingActionButton(onClick = onAddEntryClick) {
+                    Text("+ Add transaction")
+                }
+            }
         },
     ) { innerPadding ->
         when {
@@ -176,7 +188,11 @@ fun TrackerScreen(
                 if (state.filter == EntryFilter.Overview) {
                     OverviewTable(state = state, modifier = Modifier.weight(1f))
                 } else {
-                    EntryList(state = state, modifier = Modifier.weight(1f))
+                    EntryList(
+                        state = state,
+                        onEntryClick = onEntryClick,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
         }
@@ -431,10 +447,10 @@ private fun CustomRangeDialog(
 
 // The date picker works in milliseconds at midnight UTC, whatever the
 // phone's time zone, so converting through UTC keeps the chosen day intact.
-private fun LocalDate.toPickerMillis(): Long =
+internal fun LocalDate.toPickerMillis(): Long =
     atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
 
-private fun Long.toPickerDate(): LocalDate =
+internal fun Long.toPickerDate(): LocalDate =
     Instant.ofEpochMilli(this).atZone(ZoneOffset.UTC).toLocalDate()
 
 @Composable
@@ -552,6 +568,7 @@ private fun EntryFilterTabs(
 @Composable
 private fun EntryList(
     state: TrackerUiState,
+    onEntryClick: (TransactionResponse) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val entries = state.visibleTransactions
@@ -608,6 +625,7 @@ private fun EntryList(
                     entry = entry,
                     showWallet = state.selectedWalletId == null,
                     showCurrency = state.showsCurrency,
+                    onClick = { onEntryClick(entry) },
                 )
                 HorizontalDivider()
             }
@@ -620,6 +638,7 @@ private fun EntryRow(
     entry: TransactionResponse,
     showWallet: Boolean,
     showCurrency: Boolean,
+    onClick: () -> Unit,
 ) {
     val title = entryTitle(entry)
     val details = listOfNotNull(
@@ -632,6 +651,8 @@ private fun EntryRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // Tapping an entry opens it for correcting.
+            .clickable(onClick = onClick)
             .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -712,7 +733,8 @@ private fun OverviewTable(
         modifier = modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(vertical = 8.dp),
+            // The bottom space keeps the Add button from covering the note.
+            .padding(top = 8.dp, bottom = 88.dp),
     ) {
         Column(
             modifier = Modifier
