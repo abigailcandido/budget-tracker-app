@@ -6,15 +6,34 @@ import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.TransactionApi
 import com.abigailcandido.budgettracker.data.remote.TransactionCreateRequest
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
+import com.abigailcandido.budgettracker.data.remote.TrackerSummaryResponse
 import com.abigailcandido.budgettracker.data.remote.TransactionUpdateRequest
+import java.time.LocalDate
 
 class TransactionRepository(
     private val tokenStore: TokenStore,
     private val api: TransactionApi = TransactionApi(),
 ) {
 
-    suspend fun listForTracker(trackerId: Int): ApiResult<List<TransactionResponse>> =
-        tokenStore.withToken { token -> api.listForTracker(token, trackerId) }
+    /** Entries dated from start to end, both days included. */
+    suspend fun listForTracker(
+        trackerId: Int,
+        start: LocalDate,
+        end: LocalDate,
+    ): ApiResult<List<TransactionResponse>> =
+        tokenStore.withToken { token ->
+            api.listForTracker(token, trackerId, start.toString(), end.toString())
+        }
+
+    /** Each wallet's opening, income, expenses and ending balance from start to end. */
+    suspend fun summary(
+        trackerId: Int,
+        start: LocalDate,
+        end: LocalDate,
+    ): ApiResult<TrackerSummaryResponse> =
+        tokenStore.withToken { token ->
+            api.summary(token, trackerId, start.toString(), end.toString())
+        }
 
     suspend fun create(
         walletId: Int,

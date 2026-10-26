@@ -309,6 +309,9 @@ private fun SignedInNavHost(
                 onOpenCategories = {
                     navController.navigate(CategoryList(route.trackerId, route.trackerName))
                 },
+                onPreviousRange = trackerViewModel::onPreviousRange,
+                onNextRange = trackerViewModel::onNextRange,
+                onRangeSelected = trackerViewModel::onRangeSelected,
                 onWalletClick = trackerViewModel::onWalletClick,
                 onShowAllWallets = trackerViewModel::onShowAllWallets,
                 onFilterSelected = trackerViewModel::onFilterSelected,

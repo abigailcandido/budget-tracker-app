@@ -59,3 +59,31 @@ data class TransactionResponse(
 
 val TransactionResponse.entryType: EntryType
     get() = EntryType.fromApi(type)
+
+@Serializable
+data class WalletSummary(
+    @SerialName("wallet_id") val walletId: Int,
+    @SerialName("wallet_name") val walletName: String,
+    val currency: String,
+    val opening: String,
+    val income: String,
+    val expenses: String,
+    val ending: String,
+)
+
+@Serializable
+data class CurrencyTotal(
+    val currency: String,
+    val opening: String,
+    val income: String,
+    val expenses: String,
+    val ending: String,
+)
+
+@Serializable
+data class TrackerSummaryResponse(
+    @SerialName("start_date") val startDate: String,
+    @SerialName("end_date") val endDate: String,
+    val wallets: List<WalletSummary>,
+    val totals: List<CurrencyTotal>,
+)

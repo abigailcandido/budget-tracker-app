@@ -8,9 +8,12 @@ import com.abigailcandido.budgettracker.data.TransactionRepository
 import com.abigailcandido.budgettracker.data.WalletRepository
 import com.abigailcandido.budgettracker.data.remote.ApiResult
 import com.abigailcandido.budgettracker.data.remote.EntryType
+import com.abigailcandido.budgettracker.data.remote.TrackerSummaryResponse
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
+import java.time.LocalDate
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,14 +31,15 @@ private const val CURRENCY_LENGTH = 3
  */
 private val OPENING_BALANCE_PATTERN = Regex("^-?\\d*(\\.\\d{0,2})?$")
 
-/** Which entries the list shows. */
+/** The tabs under the wallets. Overview is the wallet table; the rest are entry lists. */
 enum class EntryFilter(val label: String) {
     All("All"),
     Expenses("Expenses"),
-    Income("Income");
+    Income("Income"),
+    Overview("Overview");
 
     fun matches(type: EntryType): Boolean = when (this) {
-        All -> true
+        All, Overview -> true
         Expenses -> type == EntryType.Expense
         Income -> type == EntryType.Income
     }
@@ -43,9 +47,12 @@ enum class EntryFilter(val label: String) {
 
 data class TrackerUiState(
     val isLoading: Boolean = true,
+    val isRefreshing: Boolean = false,
     val errorMessage: String? = null,
+    val range: DateRange = DateRange.month(LocalDate.now()),
     val wallets: List<WalletResponse> = emptyList(),
     val transactions: List<TransactionResponse> = emptyList(),
+    val summary: TrackerSummaryResponse? = null,
     val selectedWalletId: Int? = null,
     val filter: EntryFilter = EntryFilter.All,
     val isCreateWalletOpen: Boolean = false,
@@ -60,7 +67,7 @@ data class TrackerUiState(
     val selectedWallet: WalletResponse?
         get() = wallets.firstOrNull { it.id == selectedWalletId }
 
-    /** Entries after the wallet and tab filters, still newest first. */
+    /** Entries in the range, after the wallet and tab filters, still newest first. */
     val visibleTransactions: List<TransactionResponse>
         get() = transactions.filter { entry ->
             (selectedWalletId == null || entry.walletId == selectedWalletId) &&
@@ -86,31 +93,53 @@ class TrackerViewModel(
     private val _uiState = MutableStateFlow(TrackerUiState())
     val uiState: StateFlow<TrackerUiState> = _uiState.asStateFlow()
 
+    /**
+     * The load in progress. Tapping the arrows quickly starts several loads;
+     * only the newest is allowed to finish, so an older month's answer can
+     * never arrive late and overwrite the month on screen.
+     */
+    private var loadJob: Job? = null
+
     init {
         refresh()
     }
 
     /**
-     * Loads wallets and entries side by side, and shows them only once both
-     * have arrived, so a balance is never on screen next to a list it does not
-     * match. After the first load, a failed refresh keeps what is already
-     * showing and reports the problem instead of blanking the screen.
+     * Loads wallets, the range's entries and the range's overview side by
+     * side, and shows them only once all three have arrived, so the cards,
+     * the list and the table always agree with each other. After the first
+     * load, a failed refresh keeps what is showing and reports the problem.
      */
     fun refresh() {
-        viewModelScope.launch {
-            val (walletResult, entryResult) = coroutineScope {
+        loadJob?.cancel()
+        val range = _uiState.value.range
+        _uiState.update { it.copy(isRefreshing = !it.isLoading) }
+
+        loadJob = viewModelScope.launch {
+            val (walletResult, entryResult, summaryResult) = coroutineScope {
                 val wallets = async { walletRepository.list(trackerId) }
-                val entries = async { transactionRepository.listForTracker(trackerId) }
-                wallets.await() to entries.await()
+                val entries = async {
+                    transactionRepository.listForTracker(trackerId, range.start, range.end)
+                }
+                val summary = async {
+                    transactionRepository.summary(trackerId, range.start, range.end)
+                }
+                Triple(wallets.await(), entries.await(), summary.await())
             }
 
-            if (walletResult is ApiResult.Success && entryResult is ApiResult.Success) {
+            if (
+                walletResult is ApiResult.Success &&
+                entryResult is ApiResult.Success &&
+                summaryResult is ApiResult.Success
+            ) {
                 _uiState.update { current ->
                     current.copy(
                         isLoading = false,
+                        isRefreshing = false,
                         errorMessage = null,
                         wallets = walletResult.data,
                         transactions = entryResult.data,
+                        summary = summaryResult.data,
                         // Forget a selected wallet that no longer exists.
                         selectedWalletId = current.selectedWalletId?.takeIf { id ->
                             walletResult.data.any { it.id == id }
@@ -118,14 +147,16 @@ class TrackerViewModel(
                     )
                 }
             } else {
-                val message = (walletResult as? ApiResult.Failure)?.message
-                    ?: (entryResult as? ApiResult.Failure)?.message
+                val message = listOf(walletResult, entryResult, summaryResult)
+                    .filterIsInstance<ApiResult.Failure>()
+                    .firstOrNull()
+                    ?.message
                     ?: "Something went wrong"
                 _uiState.update { current ->
                     if (current.isLoading) {
-                        current.copy(isLoading = false, errorMessage = message)
+                        current.copy(isLoading = false, isRefreshing = false, errorMessage = message)
                     } else {
-                        current.copy(actionError = message)
+                        current.copy(isRefreshing = false, actionError = message)
                     }
                 }
             }
@@ -135,6 +166,19 @@ class TrackerViewModel(
     fun retry() {
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         refresh()
+    }
+
+    fun onRangeSelected(range: DateRange) {
+        _uiState.update { it.copy(range = range) }
+        refresh()
+    }
+
+    fun onPreviousRange() {
+        onRangeSelected(_uiState.value.range.previous())
+    }
+
+    fun onNextRange() {
+        onRangeSelected(_uiState.value.range.next())
     }
 
     /** Tapping a wallet narrows the list to it; tapping it again shows everything. */
@@ -207,7 +251,7 @@ class TrackerViewModel(
                     _uiState.update {
                         it.copy(isCreatingWallet = false, isCreateWalletOpen = false)
                     }
-                    // Entries too, since the opening balance is now one of them.
+                    // Entries and overview too, since the opening balance is one of them.
                     refresh()
                 }
                 is ApiResult.Failure -> _uiState.update {

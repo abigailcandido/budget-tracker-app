@@ -16,11 +16,29 @@ class TransactionApi(private val client: HttpClient = ApiClient.httpClient) {
     suspend fun listForTracker(
         token: String,
         trackerId: Int,
+        startDate: String,
+        endDate: String,
     ): ApiResult<List<TransactionResponse>> =
         callReturningBody("Could not load this tracker's entries") {
             client.get("trackers/$trackerId/transactions") {
                 bearer(token)
+                parameter("start_date", startDate)
+                parameter("end_date", endDate)
                 parameter("limit", PAGE_LIMIT)
+            }
+        }
+
+    suspend fun summary(
+        token: String,
+        trackerId: Int,
+        startDate: String,
+        endDate: String,
+    ): ApiResult<TrackerSummaryResponse> =
+        callReturningBody("Could not load this tracker's overview") {
+            client.get("trackers/$trackerId/summary") {
+                bearer(token)
+                parameter("start_date", startDate)
+                parameter("end_date", endDate)
             }
         }
 

@@ -1,5 +1,6 @@
 package com.abigailcandido.budgettracker.ui.trackers
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,13 +15,20 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
@@ -30,10 +38,16 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -43,8 +57,13 @@ import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
 
 private val WalletCardHeight = 96.dp
+private val WalletColumnWidth = 120.dp
+private val AmountColumnWidth = 100.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,6 +72,9 @@ fun TrackerScreen(
     state: TrackerUiState,
     onBack: () -> Unit,
     onOpenCategories: () -> Unit,
+    onPreviousRange: () -> Unit,
+    onNextRange: () -> Unit,
+    onRangeSelected: (DateRange) -> Unit,
     onWalletClick: (Int) -> Unit,
     onShowAllWallets: () -> Unit,
     onFilterSelected: (EntryFilter) -> Unit,
@@ -69,6 +91,8 @@ fun TrackerScreen(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var showCustomRange by remember { mutableStateOf(false) }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
@@ -103,6 +127,21 @@ fun TrackerScreen(
                     .fillMaxSize()
                     .padding(innerPadding),
             ) {
+                RangeBar(
+                    range = state.range,
+                    onPrevious = onPreviousRange,
+                    onNext = onNextRange,
+                    onSelect = onRangeSelected,
+                    onCustomClick = { showCustomRange = true },
+                )
+
+                // Always takes the same space, so nothing jumps when it appears.
+                if (state.isRefreshing) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                } else {
+                    Spacer(Modifier.height(4.dp))
+                }
+
                 WalletStrip(
                     wallets = state.wallets,
                     selectedWalletId = state.selectedWalletId,
@@ -133,9 +172,24 @@ fun TrackerScreen(
 
                 EntryFilterTabs(selected = state.filter, onSelect = onFilterSelected)
 
-                EntryList(state = state, modifier = Modifier.weight(1f))
+                if (state.filter == EntryFilter.Overview) {
+                    OverviewTable(state = state, modifier = Modifier.weight(1f))
+                } else {
+                    EntryList(state = state, modifier = Modifier.weight(1f))
+                }
             }
         }
+    }
+
+    if (showCustomRange) {
+        CustomRangeDialog(
+            initial = state.range,
+            onDismiss = { showCustomRange = false },
+            onConfirm = { range ->
+                showCustomRange = false
+                onRangeSelected(range)
+            },
+        )
     }
 
     if (state.isCreateWalletOpen) {
@@ -201,8 +255,9 @@ fun TrackerScreen(
     val pendingDelete = state.wallets.firstOrNull { it.id == state.pendingDeleteWalletId }
 
     if (pendingDelete != null) {
-        // Checked here first, so the user is told why before tapping Delete
-        // rather than after. The server refuses it anyway.
+        // Only entries in the range on screen are loaded, so this catches the
+        // common case early. Entries from other months are still caught by the
+        // server, whose refusal appears in the "That didn't work" dialog.
         val entryCount = state.transactions.count {
             it.walletId == pendingDelete.id && it.entryType != EntryType.Opening
         }
@@ -224,8 +279,8 @@ fun TrackerScreen(
                         entryCount > 0 ->
                             "It has $entryCount " +
                                     (if (entryCount == 1) "entry" else "entries") +
-                                    ". Delete those first, so no history disappears " +
-                                    "by accident."
+                                    " in ${state.range.label}. Delete those first, so " +
+                                    "no history disappears by accident."
 
                         pendingDelete.balance == "0.00" ->
                             "This removes the wallet permanently."
@@ -265,6 +320,122 @@ fun TrackerScreen(
     }
 }
 
+/** "‹ October 2026 ▾ ›" — arrows step through periods, the label opens the choices. */
+@Composable
+private fun RangeBar(
+    range: DateRange,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onSelect: (DateRange) -> Unit,
+    onCustomClick: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = onPrevious) {
+            Text("‹", style = MaterialTheme.typography.titleLarge)
+        }
+
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.Center,
+        ) {
+            TextButton(onClick = { menuOpen = true }) {
+                Text(
+                    text = "${range.label} ▾",
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+            ) {
+                val today = LocalDate.now()
+                listOf(
+                    "This week" to DateRange.week(today),
+                    "This month" to DateRange.month(today),
+                    "Last month" to DateRange.month(today.minusMonths(1)),
+                    "This year" to DateRange.year(today),
+                ).forEach { (label, choice) ->
+                    DropdownMenuItem(
+                        text = { Text(label) },
+                        onClick = {
+                            menuOpen = false
+                            onSelect(choice)
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Custom range…") },
+                    onClick = {
+                        menuOpen = false
+                        onCustomClick()
+                    },
+                )
+            }
+        }
+
+        TextButton(onClick = onNext) {
+            Text("›", style = MaterialTheme.typography.titleLarge)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CustomRangeDialog(
+    initial: DateRange,
+    onDismiss: () -> Unit,
+    onConfirm: (DateRange) -> Unit,
+) {
+    val pickerState = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = initial.start.toPickerMillis(),
+        initialSelectedEndDateMillis = initial.end.toPickerMillis(),
+    )
+    val start = pickerState.selectedStartDateMillis
+    val end = pickerState.selectedEndDateMillis
+
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (start != null && end != null) {
+                        onConfirm(DateRange.custom(start.toPickerDate(), end.toPickerDate()))
+                    }
+                },
+                enabled = start != null && end != null,
+            ) {
+                Text("Show")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    ) {
+        DateRangePicker(
+            state = pickerState,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+// The date picker works in milliseconds at midnight UTC, whatever the
+// phone's time zone, so converting through UTC keeps the chosen day intact.
+private fun LocalDate.toPickerMillis(): Long =
+    atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
+private fun Long.toPickerDate(): LocalDate =
+    Instant.ofEpochMilli(this).atZone(ZoneOffset.UTC).toLocalDate()
+
 @Composable
 private fun WalletStrip(
     wallets: List<WalletResponse>,
@@ -273,7 +444,7 @@ private fun WalletStrip(
     onAddWalletClick: () -> Unit,
 ) {
     LazyRow(
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(wallets, key = { it.id }) { wallet ->
@@ -333,8 +504,10 @@ private fun WalletCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(8.dp))
+            // The cards always show what is in each wallet right now, whatever
+            // range is chosen. The Overview tab shows balances for the range.
             Text(
-                text = wallet.currency,
+                text = "${wallet.currency} · now",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -364,7 +537,7 @@ private fun EntryFilterTabs(
             Tab(
                 selected = filter == selected,
                 onClick = { onSelect(filter) },
-                text = { Text(filter.label) },
+                text = { Text(filter.label, maxLines = 1) },
             )
         }
     }
@@ -375,13 +548,29 @@ private fun EntryList(
     state: TrackerUiState,
     modifier: Modifier = Modifier,
 ) {
-    if (state.wallets.isEmpty()) {
+    val entries = state.visibleTransactions
+
+    if (entries.isEmpty()) {
+        // The heading always names the tab, so Expenses never says anything
+        // about wallets. A missing wallet is explained underneath instead.
         CenteredMessage(modifier) {
-            Text("No wallets yet", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = when (state.filter) {
+                    EntryFilter.All, EntryFilter.Overview -> "No entries"
+                    EntryFilter.Expenses -> "No expenses"
+                    EntryFilter.Income -> "No income"
+                } + " in ${state.range.label}",
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+            )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "Add a wallet above — your cash, a bank account, an " +
-                        "e-wallet. Its opening balance becomes its first entry.",
+                text = if (state.wallets.isEmpty()) {
+                    "Add a wallet above first — your cash, a bank account, an " +
+                            "e-wallet. Its opening balance becomes its first entry."
+                } else {
+                    "Use the arrows, or tap the dates above, to look at another period."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -390,24 +579,8 @@ private fun EntryList(
         return
     }
 
-    val entries = state.visibleTransactions
-
-    if (entries.isEmpty()) {
-        CenteredMessage(modifier) {
-            Text(
-                text = when (state.filter) {
-                    EntryFilter.All -> "No entries yet"
-                    EntryFilter.Expenses -> "No expenses yet"
-                    EntryFilter.Income -> "No income yet"
-                },
-                style = MaterialTheme.typography.titleMedium,
-            )
-        }
-        return
-    }
-
-    // The server already sends entries newest first, and grouping keeps that
-    // order, so each day's heading appears above that day's entries.
+    // The server sends entries newest first, and grouping keeps that order,
+    // so each day's heading sits above that day's entries.
     val byDate = entries.groupBy { it.transactionDate }
 
     LazyColumn(
@@ -486,6 +659,130 @@ private fun EntryRow(
         )
     }
 }
+
+/**
+ * Wallet | Opening | Income | Expenses | Ending, for the chosen range. Wider
+ * than a phone held upright, so it scrolls sideways; the explanation below it
+ * does not.
+ */
+@Composable
+private fun OverviewTable(
+    state: TrackerUiState,
+    modifier: Modifier = Modifier,
+) {
+    val summary = state.summary
+
+    if (summary == null) {
+        CenteredMessage(modifier) { CircularProgressIndicator() }
+        return
+    }
+
+    if (summary.wallets.isEmpty()) {
+        CenteredMessage(modifier) {
+            Text(
+                text = "No wallets in ${state.range.label}",
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+            )
+        }
+        return
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(vertical = 8.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
+            TableRow(
+                cells = listOf("Wallet", "Opening", "Income", "Expenses", "Ending"),
+                isHeader = true,
+            )
+            HorizontalDivider()
+
+            summary.wallets.forEach { row ->
+                TableRow(
+                    cells = listOf(
+                        if (state.showsCurrency) "${row.walletName} (${row.currency})" else row.walletName,
+                        formatMoney(row.opening),
+                        dashIfZero(row.income),
+                        dashIfZero(row.expenses),
+                        formatMoney(row.ending),
+                    ),
+                    isBold = row.walletId == state.selectedWalletId,
+                    endingIsNegative = isNegative(row.ending),
+                )
+                HorizontalDivider()
+            }
+
+            // One total per currency: pesos and dollars are never added together.
+            summary.totals.forEach { total ->
+                TableRow(
+                    cells = listOf(
+                        if (summary.totals.size > 1) "Total ${total.currency}" else "Total",
+                        formatMoney(total.opening),
+                        dashIfZero(total.income),
+                        dashIfZero(total.expenses),
+                        formatMoney(total.ending),
+                    ),
+                    isBold = true,
+                    endingIsNegative = isNegative(total.ending),
+                )
+            }
+        }
+
+        Text(
+            text = "Opening is the balance at the start of " +
+                    "${state.range.start.asDayLabel()}, and Ending is the balance at " +
+                    "the end of ${state.range.end.asDayLabel()}. " +
+                    "Opening + Income − Expenses = Ending.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp),
+        )
+    }
+}
+
+@Composable
+private fun TableRow(
+    cells: List<String>,
+    isHeader: Boolean = false,
+    isBold: Boolean = false,
+    endingIsNegative: Boolean = false,
+) {
+    Row(modifier = Modifier.padding(vertical = 10.dp)) {
+        cells.forEachIndexed { index, text ->
+            val isAmount = index > 0
+            Text(
+                text = text,
+                modifier = Modifier.width(if (isAmount) AmountColumnWidth else WalletColumnWidth),
+                textAlign = if (isAmount) TextAlign.End else TextAlign.Start,
+                style = if (isHeader) {
+                    MaterialTheme.typography.labelMedium
+                } else {
+                    MaterialTheme.typography.bodyMedium
+                },
+                fontWeight = if (isBold) FontWeight.Bold else null,
+                color = when {
+                    isHeader -> MaterialTheme.colorScheme.onSurfaceVariant
+                    index == cells.lastIndex && endingIsNegative -> MaterialTheme.colorScheme.error
+                    else -> Color.Unspecified
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** Income and expense columns read more easily with a dash where nothing happened. */
+private fun dashIfZero(amount: String): String =
+    if ((amount.toBigDecimalOrNull()?.signum() ?: 0) == 0) "—" else formatMoney(amount)
 
 @Composable
 private fun CenteredMessage(
