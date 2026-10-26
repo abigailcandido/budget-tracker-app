@@ -2,9 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.category_lookup import find_or_create_leaf
 from app.deps import get_current_user, get_db
 from app.models import (
     CATEGORY_EXPENSE,
+    OTHERS_CATEGORY_NAME,
     BudgetLimit,
     Category,
     MainTracker,
@@ -19,6 +21,7 @@ from app.schemas import (
     CategoryKind,
     CategoryResponse,
     CategoryUpdateRequest,
+    OthersCategoryRequest,
     TrackerCategoryResponse,
 )
 
@@ -593,6 +596,54 @@ def list_tracker_categories(
 
     return results
 
+@router.post(
+    "/trackers/{tracker_id}/categories/others",
+    response_model=TrackerCategoryResponse,
+    summary="The tracker's Others category, made the first time it is needed",
+)
+def others_category(
+    tracker_id: int,
+    payload: OthersCategoryRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TrackerCategoryResponse:
+    """Others is offered in every picker, at the top level and under every
+    category with subcategories, but only made once something is filed there,
+    so the category lists never fill up with empty buckets.
+
+    Asking again returns the same category, switched on in this tracker.
+    """
+    tracker = get_owned_tracker(tracker_id, user, db)
+
+    parent: Category | None = None
+    if payload.parent_id is not None:
+        parent = get_owned_category(payload.parent_id, user, db)
+        _reject_wrong_scope(parent, tracker)
+
+        if parent.parent_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Others goes under a top-level category, not under a subcategory",
+            )
+        if not _child_ids(parent.id, user, db):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This category has no subcategories. Choose Others at the top level instead",
+            )
+
+    others, _ = find_or_create_leaf(OTHERS_CATEGORY_NAME, payload.kind, parent, tracker, user, db)
+    db.commit()
+    db.refresh(others)
+
+    return TrackerCategoryResponse(
+        id=others.id,
+        name=others.name,
+        kind=others.kind,
+        parent_id=others.parent_id,
+        is_global=others.main_tracker_id is None,
+        is_enabled=True,
+        has_children=False,
+    )
 
 @router.put(
     "/trackers/{tracker_id}/categories/{category_id}",

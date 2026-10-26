@@ -9,7 +9,8 @@ be audited. Correcting an entry adds a reversal, which cancels it, and the
 corrected entry; deleting an entry adds only the reversal. A reversal is a copy
 of the entry with the amount negated and the same date, so every total that
 adds up amounts by kind, category, wallet or date stays right without knowing
-about adjustments at all.
+about adjustments at all. A deleted entry stays in the tracker's list, marked
+as deleted, and a reversal records why it was made.
 """
 
 from datetime import date
@@ -19,8 +20,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session, aliased
 
+from app.category_lookup import find_or_create_leaf, is_others
 from app.deps import get_current_user, get_db
 from app.models import (
+    OTHERS_CATEGORY_NAME,
     TRANSACTION_EXPENSE,
     TRANSACTION_INCOME,
     TRANSACTION_OPENING,
@@ -38,19 +41,26 @@ from app.ownership import (
 )
 from app.schemas import (
     CurrencyTotalResponse,
+    PromoteOtherRequest,
+    PromoteOtherResponse,
     TrackerSummaryResponse,
     TransactionCreateRequest,
+    TransactionDeleteRequest,
     TransactionResponse,
     TransactionUpdateRequest,
     WalletSummaryResponse,
     format_money,
 )
+from app.security import verify_password
 
 router = APIRouter(tags=["transactions"])
 
 ParentCategory = aliased(Category)
 # The reversal that cancels a transaction, if there is one.
 Reversal = aliased(Transaction)
+# The correction that replaced a transaction, if there is one. A version that
+# was reversed with nothing replacing it was deleted.
+Correction = aliased(Transaction)
 
 
 # --------------------------------------------------------------------------
@@ -176,7 +186,11 @@ def _require_current(transaction: Transaction, db: Session) -> None:
         )
 
 
-def _reverse(transaction: Transaction, wallets: dict[int, Wallet]) -> Transaction:
+def _reverse(
+    transaction: Transaction,
+    wallets: dict[int, Wallet],
+    reason: str | None = None,
+) -> Transaction:
     """A reversal that cancels this transaction, applied to its wallet's balance.
 
     It carries the same date, wallet and category as the entry it cancels, so
@@ -195,20 +209,64 @@ def _reverse(transaction: Transaction, wallets: dict[int, Wallet]) -> Transactio
         transaction_date=transaction.transaction_date,
         reverses_id=transaction.id,
         origin_id=transaction.origin_id or transaction.id,
+        other_name=transaction.other_name,
+        reason=reason,
     )
     wallets[transaction.wallet_id].balance += _effect(reversal.type, reversal.amount)
     return reversal
 
 
+def _require_pin(user: User, pin: str) -> None:
+    """Deleting an entry, or moving entries out of Others, asks for the PIN again."""
+    if user.hashed_pin is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No PIN has been set for this account",
+        )
+    if not verify_password(pin, user.hashed_pin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Incorrect PIN",
+        )
+
+
+def _other_name_for(category: Category | None, other_name: str | None) -> str | None:
+    """An entry under Others needs a name for what it was; no other entry has one.
+
+    The name is what lets the entry be given a category of its own later.
+    """
+    if is_others(category):
+        if not other_name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Say what this entry was, so it can be given a category later",
+            )
+        if other_name.strip().lower() == OTHERS_CATEGORY_NAME.lower():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Say what this entry was, rather than just Others",
+            )
+        return other_name
+
+    if other_name is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an entry under Others has a name of its own",
+        )
+    return None
+
+
 def _described(db: Session):
     """A query returning each transaction with its wallet and category names,
-    and the id of the reversal that cancelled it, if any."""
+    and the ids of the reversal that cancelled it and the correction that
+    replaced it, if any."""
     return (
-        db.query(Transaction, Wallet, Category, ParentCategory, Reversal.id)
+        db.query(Transaction, Wallet, Category, ParentCategory, Reversal.id, Correction.id)
         .join(Wallet, Transaction.wallet_id == Wallet.id)
         .outerjoin(Category, Transaction.category_id == Category.id)
         .outerjoin(ParentCategory, Category.parent_id == ParentCategory.id)
         .outerjoin(Reversal, Reversal.reverses_id == Transaction.id)
+        .outerjoin(Correction, Correction.replaces_id == Transaction.id)
     )
 
 
@@ -218,6 +276,7 @@ def _to_response(
     category: Category | None,
     parent: Category | None,
     reversal_id: int | None,
+    correction_id: int | None,
 ) -> TransactionResponse:
     return TransactionResponse(
         id=transaction.id,
@@ -235,6 +294,9 @@ def _to_response(
         replaces_id=transaction.replaces_id,
         reverses_id=transaction.reverses_id,
         is_reversed=reversal_id is not None,
+        is_deleted=reversal_id is not None and correction_id is None,
+        other_name=transaction.other_name,
+        reason=transaction.reason,
     )
 
 
@@ -270,6 +332,7 @@ def create_transaction(
     wallet = get_owned_wallet(payload.wallet_id, user, db)
     _require_main_tracker_wallet(wallet)
     category = _check_category(payload.category_id, payload.type, wallet, user, db)
+    other_name = _other_name_for(category, payload.other_name)
 
     wallets = _lock_wallets({wallet.id}, db)
 
@@ -281,6 +344,7 @@ def create_transaction(
         type=payload.type,
         description=payload.description,
         transaction_date=payload.transaction_date,
+        other_name=other_name,
     )
     db.add(transaction)
 
@@ -307,9 +371,9 @@ def list_transactions(
     include_adjustments: bool = Query(
         default=False,
         description=(
-            "Also list versions that were corrected or deleted, and the "
-            "reversals that cancelled them. Normally only the latest version "
-            "of each entry is listed."
+            "Also list versions that were corrected, and the reversals that "
+            "cancelled them. Normally only the latest version of each entry "
+            "is listed, deleted entries included."
         ),
     ),
     limit: int = Query(default=100, ge=1, le=500),
@@ -323,7 +387,13 @@ def list_transactions(
     query = _described(db).filter(Wallet.main_tracker_id == tracker.id)
 
     if not include_adjustments:
-        query = query.filter(Transaction.reverses_id.is_(None), Reversal.id.is_(None))
+        # The current version of each entry, and deleted entries, which stay in
+        # the list marked as deleted. Earlier versions of corrected entries,
+        # and the reversals themselves, belong to the entry's history.
+        query = query.filter(
+            Transaction.reverses_id.is_(None),
+            or_(Reversal.id.is_(None), Correction.id.is_(None)),
+        )
 
     # Both ends are included, so a range of one day is start_date == end_date.
     if start_date is not None:
@@ -557,7 +627,7 @@ def update_transaction(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An opening balance cannot become an income or an expense",
             )
-        if payload.category_id is not None:
+        if payload.category_id is not None or payload.other_name is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An opening balance has no category",
@@ -569,6 +639,7 @@ def update_transaction(
             )
         new_type = transaction.type
         new_category_id = None
+        new_other_name = None
     else:
         if new_amount <= 0:
             raise HTTPException(
@@ -588,7 +659,7 @@ def update_transaction(
 
         category_changed = new_category_id != transaction.category_id
         if category_changed or new_type != transaction.type:
-            _check_category(
+            new_category = _check_category(
                 new_category_id,
                 new_type,
                 new_wallet,
@@ -596,6 +667,18 @@ def update_transaction(
                 db,
                 must_be_switched_on=category_changed,
             )
+        else:
+            new_category = get_owned_category(new_category_id, user, db)
+
+        # Left out, an entry staying under Others keeps its name; one moving
+        # to a different category has to be given a new one if it needs one.
+        if "other_name" in payload.model_fields_set:
+            requested_name = payload.other_name
+        elif not category_changed:
+            requested_name = transaction.other_name
+        else:
+            requested_name = None
+        new_other_name = _other_name_for(new_category, requested_name)
 
     new_date = (
         payload.transaction_date
@@ -618,12 +701,13 @@ def update_transaction(
         and new_category_id == transaction.category_id
         and new_date == transaction.transaction_date
         and new_description == transaction.description
+        and new_other_name == transaction.other_name
     )
     if unchanged:
         return _load_response(transaction.id, db)
 
     wallets = _lock_wallets({old_wallet.id, new_wallet.id}, db)
-    reversal = _reverse(transaction, wallets)
+    reversal = _reverse(transaction, wallets, payload.reason)
 
     correction = Transaction(
         user_id=user.id,
@@ -637,6 +721,7 @@ def update_transaction(
         transaction_date=new_date,
         replaces_id=transaction.id,
         origin_id=transaction.origin_id or transaction.id,
+        other_name=new_other_name,
     )
     wallets[new_wallet.id].balance += _effect(new_type, new_amount)
 
@@ -651,18 +736,134 @@ def update_transaction(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a transaction",
     description=(
-        "The entry is kept as history. A reversal that cancels it is added, "
-        "and the entry no longer appears in the tracker's list."
+        "Needs a reason and the PIN. The entry is kept: a reversal that "
+        "cancels it is added, carrying the reason, and the entry stays in the "
+        "tracker's list marked as deleted."
     ),
 )
 def delete_transaction(
     transaction_id: int,
+    payload: TransactionDeleteRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
     _require_current(transaction, db)
+    _require_pin(user, payload.pin)
 
     wallets = _lock_wallets({transaction.wallet_id}, db)
-    db.add(_reverse(transaction, wallets))
+    db.add(_reverse(transaction, wallets, payload.reason))
     db.commit()
+
+
+@router.post(
+    "/transactions/{transaction_id}/promote-other",
+    response_model=PromoteOtherResponse,
+    summary="Give an Others entry a category of its own",
+    description=(
+        "Needs the PIN. Finds the category with that name at the same level, "
+        "ignoring capitals, or creates it, then moves every current entry in "
+        "the tracker filed under the same Others with the same name into it. "
+        "Each move is recorded as an adjustment."
+    ),
+)
+def promote_other(
+    transaction_id: int,
+    payload: PromoteOtherRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PromoteOtherResponse:
+    transaction = get_owned_transaction(transaction_id, user, db)
+    _require_current(transaction, db)
+
+    others = (
+        db.get(Category, transaction.category_id)
+        if transaction.category_id is not None
+        else None
+    )
+    if not is_others(others) or not transaction.other_name:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an entry under Others can be given a category this way",
+        )
+
+    _require_pin(user, payload.pin)
+
+    name = payload.name or transaction.other_name
+    if name.strip().lower() == OTHERS_CATEGORY_NAME.lower():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Choose a name other than Others",
+        )
+
+    wallet = get_owned_wallet(transaction.wallet_id, user, db)
+    tracker = get_owned_tracker(wallet.main_tracker_id, user, db)
+    parent = db.get(Category, others.parent_id) if others.parent_id is not None else None
+
+    # Under Others at the top level, the new category is top-level too; under
+    # "Bills › Others", it becomes another of Bills' subcategories.
+    target, created = find_or_create_leaf(name, others.kind, parent, tracker, user, db)
+
+    match_name = transaction.other_name.strip().lower()
+    candidate_ids = [
+        row.id
+        for row in db.query(Transaction.id)
+        .join(Wallet, Transaction.wallet_id == Wallet.id)
+        .outerjoin(Reversal, Reversal.reverses_id == Transaction.id)
+        .filter(
+            Wallet.main_tracker_id == tracker.id,
+            Transaction.category_id == others.id,
+            Transaction.reverses_id.is_(None),
+            Reversal.id.is_(None),
+            func.lower(func.trim(Transaction.other_name)) == match_name,
+        )
+    ]
+    entries = (
+        db.query(Transaction)
+        .filter(Transaction.id.in_(candidate_ids))
+        .order_by(Transaction.id)
+        .with_for_update()
+        .populate_existing()
+        .all()
+    )
+    wallets = _lock_wallets({entry.wallet_id for entry in entries}, db)
+
+    reason = f"Moved from Others to {target.name}"
+    moved = 0
+    for entry in entries:
+        # Checked again under the lock, in case a correction saved a moment
+        # ago has already replaced this version.
+        already_reversed = (
+            db.query(Transaction.id).filter(Transaction.reverses_id == entry.id).first()
+            is not None
+        )
+        if already_reversed:
+            continue
+
+        db.add(_reverse(entry, wallets, reason))
+        db.add(
+            Transaction(
+                user_id=entry.user_id,
+                wallet_id=entry.wallet_id,
+                category_id=target.id,
+                recurring_rule_id=entry.recurring_rule_id,
+                source_main_tracker_id=entry.source_main_tracker_id,
+                amount=entry.amount,
+                type=entry.type,
+                description=entry.description,
+                transaction_date=entry.transaction_date,
+                replaces_id=entry.id,
+                origin_id=entry.origin_id or entry.id,
+            )
+        )
+        wallets[entry.wallet_id].balance += _effect(entry.type, entry.amount)
+        moved += 1
+
+    db.commit()
+
+    return PromoteOtherResponse(
+        category_id=target.id,
+        category_name=target.name,
+        created=created,
+        moved=moved,
+    )

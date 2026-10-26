@@ -18,6 +18,9 @@ from datetime import date, timedelta
 import urllib.error
 import urllib.request
 
+# The first test account's PIN, which deleting an entry asks for.
+PIN = "135790"
+
 BASE_URL = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000").rstrip("/")
 
 PASSED: list[str] = []
@@ -108,6 +111,9 @@ def main() -> None:
         body={"email": f"smoke-{stamp}-c@example.com", "password": "short"},
     )
     check("short password rejected", status, 422)
+    
+    status, _ = call("POST", "/auth/pin", token_a, {"password": "testing12345", "pin": PIN})
+    check("set a PIN", status, 204)
 
     print("\nReset links")
     # The links themselves only ever reach an inbox (or, with no email key set,
@@ -592,7 +598,12 @@ def main() -> None:
 
     # A correction never changes the entry it corrects. It adds a reversal
     # that cancels it and a corrected entry, which comes back with a new id.
-    status, bill_v2 = call("PATCH", f"/transactions/{bill['id']}", token_a, {"amount": "200.00"})
+    status, bill_v2 = call(
+        "PATCH",
+        f"/transactions/{bill['id']}",
+        token_a,
+        {"amount": "200.00", "reason": "Typed one zero too many"},
+    )
     check("correct an amount", status, 200)
     check("the correction is a new entry", id_of(bill_v2) not in (None, bill["id"]), True)
     check("which says what it replaced", (bill_v2 or {}).get("replaces_id"), bill["id"])
@@ -670,11 +681,32 @@ def main() -> None:
     status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={bank['id']}", token_a)
     check("list one wallet's transactions", [row["amount"] for row in rows or []], ["200.00", "30000.00"])
 
+    deletion = {"reason": "Bought by mistake", "pin": PIN}
     status, _ = call("DELETE", f"/transactions/{id_of(groceries_v3)}", token_a)
+    check("deleting needs a reason and the PIN", status, 422)
+
+    status, _ = call(
+        "DELETE", f"/transactions/{id_of(groceries_v3)}", token_a, {**deletion, "reason": "   "}
+    )
+    check("a blank reason is refused", status, 422)
+
+    status, _ = call(
+        "DELETE", f"/transactions/{id_of(groceries_v3)}", token_a, {**deletion, "pin": "000000"}
+    )
+    check("a wrong PIN is refused", status, 403)
+
+    status, _ = call("DELETE", f"/transactions/{id_of(groceries_v3)}", token_a, deletion)
     check("delete a transaction", status, 204)
     check("its amount returns to the wallet", balance_of(wallet["id"]), "1000.00")
 
-    status, _ = call("DELETE", f"/transactions/{id_of(groceries_v3)}", token_a)
+    status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={wallet['id']}", token_a)
+    check(
+        "a deleted transaction stays in the list, marked as deleted",
+        [(row["id"], row["is_deleted"]) for row in rows or [] if row["type"] == "expense"],
+        [(id_of(groceries_v3), True)],
+    )
+
+    status, _ = call("DELETE", f"/transactions/{id_of(groceries_v3)}", token_a, deletion)
     check("a deleted transaction cannot be deleted again", status, 409)
 
     print("\nAdjustments")
@@ -702,6 +734,12 @@ def main() -> None:
         [(bill["transaction_date"], "Cash")] * 2,
     )
 
+    check(
+        "a correction's reason is kept with it",
+        (history or [{}, {}])[1].get("reason"),
+        "Typed one zero too many",
+    )
+
     status, from_original = call("GET", f"/transactions/{bill['id']}/history", token_a)
     check(
         "the same history comes back from any of its versions",
@@ -713,11 +751,22 @@ def main() -> None:
     status, _ = call("PATCH", f"/transactions/{reversal_id}", token_a, {"amount": "1.00"})
     check("a reversal cannot be corrected", status, 409)
 
-    status, _ = call("DELETE", f"/transactions/{reversal_id}", token_a)
+    status, _ = call("DELETE", f"/transactions/{reversal_id}", token_a, deletion)
     check("a reversal cannot be deleted", status, 409)
 
     status, deleted = call("GET", f"/transactions/{id_of(groceries_v3)}", token_a)
-    check("a deleted entry is kept, marked as reversed", (deleted or {}).get("is_reversed"), True)
+    check(
+        "a deleted entry is kept, marked as reversed and deleted",
+        ((deleted or {}).get("is_reversed"), (deleted or {}).get("is_deleted")),
+        (True, True),
+    )
+
+    status, history = call("GET", f"/transactions/{id_of(groceries_v3)}/history", token_a)
+    check(
+        "the reason for deleting is kept with it",
+        (history or [{}])[-1].get("reason"),
+        "Bought by mistake",
+    )
 
     status, rows = call(
         "GET", f"/trackers/{one}/transactions?wallet_id={wallet['id']}&include_adjustments=true", token_a
@@ -742,7 +791,7 @@ def main() -> None:
         token_a,
         {**expense, "wallet_id": id_of(spare), "amount": "5.00"},
     )
-    call("DELETE", f"/transactions/{id_of(mistake)}", token_a)
+    call("DELETE", f"/transactions/{id_of(mistake)}", token_a, deletion)
     status, _ = call("DELETE", f"/wallets/{id_of(spare)}", token_a)
     check("a wallet whose entries were all deleted can be deleted", status, 204)
 
@@ -858,6 +907,149 @@ def main() -> None:
     )
     check("a summary range that ends before it starts is refused", status, 422)
 
+    print("\nOthers")
+
+    status, others = call(
+        "POST", f"/trackers/{one}/categories/others", token_a, {"kind": "expense"}
+    )
+    check(
+        "ask for the tracker's Others category",
+        (status, (others or {}).get("name"), (others or {}).get("is_enabled")),
+        (200, "Others", True),
+    )
+
+    status, again = call(
+        "POST", f"/trackers/{one}/categories/others", token_a, {"kind": "expense"}
+    )
+    check("asking again gives the same one", id_of(again), id_of(others))
+
+    status, under_bills = call(
+        "POST", f"/trackers/{one}/categories/others", token_a, {"parent_id": bills["id"]}
+    )
+    check(
+        "a category with subcategories has an Others of its own",
+        (status, (under_bills or {}).get("parent_id")),
+        (200, bills["id"]),
+    )
+
+    status, _ = call(
+        "POST", f"/trackers/{one}/categories/others", token_a, {"parent_id": groceries["id"]}
+    )
+    check("a category without subcategories has no Others under it", status, 409)
+
+    pet = {**expense, "category_id": id_of(others), "amount": "80.00"}
+    status, _ = call("POST", "/transactions", token_a, pet)
+    check("an entry under Others has to say what it was", status, 422)
+
+    status, _ = call("POST", "/transactions", token_a, {**expense, "other_name": "Pet food"})
+    check("an entry under any other category has no Others name", status, 409)
+
+    status, pet_one = call("POST", "/transactions", token_a, {**pet, "other_name": "Pet food"})
+    check(
+        "record an entry under Others",
+        (status, (pet_one or {}).get("other_name")),
+        (201, "Pet food"),
+    )
+    status, pet_two = call("POST", "/transactions", token_a, {**pet, "other_name": "  pet FOOD "})
+    status, toys = call("POST", "/transactions", token_a, {**pet, "other_name": "Toys"})
+
+    status, _ = call(
+        "POST", f"/transactions/{id_of(pet_one)}/promote-other", token_a, {"pin": "000000"}
+    )
+    check("giving it a category needs the right PIN", status, 403)
+
+    status, promoted = call(
+        "POST", f"/transactions/{id_of(pet_one)}/promote-other", token_a, {"pin": PIN}
+    )
+    check(
+        "give an Others entry a category of its own",
+        (status, (promoted or {}).get("category_name"), (promoted or {}).get("created")),
+        (200, "Pet food", True),
+    )
+    check(
+        "every entry of that name moves into it, whatever its capitals",
+        (promoted or {}).get("moved"),
+        2,
+    )
+
+    status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={wallet['id']}", token_a)
+    check(
+        "the moved entries are filed under it, and Toys stays in Others",
+        sorted(
+            (row["category_name"], row["other_name"] or "")
+            for row in rows or []
+            if row["amount"] == "80.00"
+        ),
+        [("Others", "Toys"), ("Pet food", ""), ("Pet food", "")],
+    )
+
+    status, history = call("GET", f"/transactions/{id_of(pet_two)}/history", token_a)
+    check(
+        "each move is kept as an adjustment, with its reason",
+        (history or [{}, {}])[1].get("reason"),
+        "Moved from Others to Pet food",
+    )
+
+    status, _ = call(
+        "POST", f"/transactions/{id_of(pet_one)}/promote-other", token_a, {"pin": PIN}
+    )
+    check("an entry that has been moved cannot be moved again", status, 409)
+
+    status, shopping = call(
+        "POST", "/transactions", token_a, {**pet, "other_name": "GROCERIES"}
+    )
+    status, reused = call(
+        "POST", f"/transactions/{id_of(shopping)}/promote-other", token_a, {"pin": PIN}
+    )
+    check(
+        "a name that is already a category, in any capitals, uses that category",
+        (status, (reused or {}).get("category_id"), (reused or {}).get("created")),
+        (200, groceries["id"], False),
+    )
+
+    status, _ = call(
+        "POST",
+        f"/transactions/{id_of(toys)}/promote-other",
+        token_a,
+        {"pin": PIN, "name": "others"},
+    )
+    check("Others cannot be the new category's name", status, 422)
+
+    status, internet = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {**pet, "category_id": id_of(under_bills), "other_name": "Internet"},
+    )
+    call("POST", f"/transactions/{id_of(internet)}/promote-other", token_a, {"pin": PIN})
+    status, rows = call("GET", f"/trackers/{one}/categories", token_a)
+    check(
+        "an entry under Bills › Others becomes another of Bills' subcategories",
+        next((row["parent_id"] for row in rows or [] if row["name"] == "Internet"), None),
+        bills["id"],
+    )
+
+    status, renamed = call(
+        "PATCH", f"/transactions/{id_of(toys)}", token_a, {"other_name": "Pet toys"}
+    )
+    check(
+        "an Others entry's name can be corrected",
+        (status, (renamed or {}).get("other_name")),
+        (200, "Pet toys"),
+    )
+
+    status, moved_out = call(
+        "PATCH", f"/transactions/{id_of(renamed)}", token_a, {"category_id": groceries["id"]}
+    )
+    check(
+        "moving an entry out of Others drops its Others name",
+        (status, (moved_out or {}).get("other_name")),
+        (200, None),
+    )
+
+    status, _ = call("POST", f"/transactions/{pay['id']}/promote-other", token_a, {"pin": PIN})
+    check("only an entry under Others can be given a category this way", status, 409)
+
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)
     check("another account's tracker is not found", status, 404)
@@ -876,6 +1068,14 @@ def main() -> None:
     
     status, _ = call("GET", f"/transactions/{pay['id']}/history", token_b)
     check("another account's transaction history is not found", status, 404)
+    
+    status, _ = call(
+        "POST", f"/trackers/{one}/categories/others", token_b, {"kind": "expense"}
+    )
+    check("another account's tracker has no Others to give", status, 404)
+
+    status, _ = call("POST", f"/transactions/{pay['id']}/promote-other", token_b, {"pin": PIN})
+    check("another account's entry cannot be given a category", status, 404)
 
     status, _ = call("GET", f"/trackers/{one}/transactions", token_b)
     check("another account's transactions cannot be listed", status, 404)

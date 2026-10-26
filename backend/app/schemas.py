@@ -310,6 +310,11 @@ class TransactionCreateRequest(BaseModel):
     category_id: int = Field(ge=1)
     transaction_date: date
     description: str | None = Field(default=None, max_length=255)
+    other_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Required under an Others category, and only there: what the entry was.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -329,7 +334,7 @@ class TransactionCreateRequest(BaseModel):
     def not_in_future(cls, value: date) -> date:
         return _reject_future_date(value)
 
-    @field_validator("description")
+    @field_validator("description", "other_name")
     @classmethod
     def tidy_description(cls, value: str | None) -> str | None:
         return _clean_description(value)
@@ -352,16 +357,70 @@ class TransactionUpdateRequest(BaseModel):
     category_id: int | None = Field(default=None, ge=1)
     transaction_date: date | None = None
     description: str | None = Field(default=None, max_length=255)
+    other_name: str | None = Field(default=None, max_length=100)
+    reason: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional: why the entry is being corrected. Kept in its history.",
+    )
 
     @field_validator("transaction_date")
     @classmethod
     def not_in_future(cls, value: date | None) -> date | None:
         return _reject_future_date(value)
 
-    @field_validator("description")
+    @field_validator("description", "other_name", "reason")
     @classmethod
     def tidy_description(cls, value: str | None) -> str | None:
         return _clean_description(value)
+
+
+class TransactionDeleteRequest(BaseModel):
+    """A deletion needs a reason, and the PIN again, before anything happens."""
+
+    reason: str = Field(min_length=1, max_length=255)
+    pin: str = Field(pattern=PIN_PATTERN)
+
+    @field_validator("reason")
+    @classmethod
+    def require_reason(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Say why the entry is being deleted")
+        return cleaned
+
+
+class OthersCategoryRequest(BaseModel):
+    """Which Others bucket: the top-level one of a kind, or the one under a parent."""
+
+    kind: CategoryKind = Field(
+        default="expense",
+        description="Used for the top-level bucket. Under a parent, the parent's kind wins.",
+    )
+    parent_id: int | None = Field(default=None, ge=1)
+
+
+class PromoteOtherRequest(BaseModel):
+    name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="The new category's name. Leave it out to use the entry's own Others name.",
+    )
+    pin: str = Field(pattern=PIN_PATTERN)
+
+    @field_validator("name")
+    @classmethod
+    def tidy_name(cls, value: str | None) -> str | None:
+        return _clean_description(value)
+
+
+class PromoteOtherResponse(BaseModel):
+    category_id: int
+    category_name: str
+    # False when a category of that name already existed and was used instead.
+    created: bool
+    # How many Others entries of that name moved into it.
+    moved: int
 
 
 class TransactionResponse(BaseModel):
@@ -385,6 +444,12 @@ class TransactionResponse(BaseModel):
     replaces_id: int | None = None
     reverses_id: int | None = None
     is_reversed: bool = False
+        # Deleted: reversed with nothing replacing it. A deleted entry stays in the
+    # lists, but counts towards nothing.
+    is_deleted: bool = False
+    other_name: str | None = None
+    # On a reversal: why the entry was corrected or deleted.
+    reason: str | None = None
 
 class WalletSummaryResponse(BaseModel):
     """One wallet's movement over a date range.

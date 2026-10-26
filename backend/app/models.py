@@ -15,6 +15,12 @@ from app.database import Base
 CATEGORY_EXPENSE = "expense"
 CATEGORY_INCOME = "income"
 
+# The catch-all for something that has no category yet. There is one at the
+# top level of each kind, and one under any category with subcategories, each
+# made the first time an entry is filed there. An entry under Others carries a
+# name of its own, such as "Pet food", until it is given a category.
+OTHERS_CATEGORY_NAME = "Others"
+
 # What a transaction does to its wallet. Income adds, expense subtracts, and
 # an opening balance sets the starting point when a wallet is created. Income
 # and expense amounts are always positive; an opening balance may be negative,
@@ -156,6 +162,12 @@ class Transaction(Base):
     origin_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    
+    # Under an Others category: what the entry actually was, such as "Pet
+    # food", until it is given a category of its own. Empty everywhere else.
+    other_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # On a reversal: why the entry was corrected or deleted, in the user's words.
+    reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
 
 class BudgetLimit(Base):
