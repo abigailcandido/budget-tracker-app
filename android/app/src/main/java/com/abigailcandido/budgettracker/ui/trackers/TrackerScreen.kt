@@ -56,6 +56,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.abigailcandido.budgettracker.data.remote.EntryType
+import com.abigailcandido.budgettracker.data.remote.isAdjusted
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
@@ -657,12 +658,20 @@ private fun EntryRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    // Shrinks a long title instead of pushing the tag off the row.
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (entry.isAdjusted) {
+                    Spacer(Modifier.width(8.dp))
+                    AdjustedTag()
+                }
+            }
             if (details.isNotEmpty()) {
                 Text(
                     text = details,

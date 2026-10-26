@@ -69,4 +69,12 @@ class TransactionApi(private val client: HttpClient = ApiClient.httpClient) {
         callReturningNothing("Could not delete the entry") {
             client.delete("transactions/$transactionId") { bearer(token) }
         }
+
+    suspend fun history(
+        token: String,
+        transactionId: Int,
+    ): ApiResult<List<TransactionResponse>> =
+        callReturningBody("Could not load this entry's history") {
+            client.get("transactions/$transactionId/history") { bearer(token) }
+        }
 }

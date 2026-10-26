@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.abigailcandido.budgettracker.data.AuthRepository
 import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.TransactionRepository
 import com.abigailcandido.budgettracker.data.WalletRepository
@@ -13,6 +14,8 @@ import com.abigailcandido.budgettracker.data.remote.TrackerSummaryResponse
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
+import com.abigailcandido.budgettracker.data.remote.isAdjusted
+import com.abigailcandido.budgettracker.ui.pin.PIN_LENGTH
 import java.time.LocalDate
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -64,6 +67,8 @@ data class TrackerUiState(
     val createWalletError: String? = null,
     val pendingDeleteWalletId: Int? = null,
     val actionError: String? = null,
+    /** The details page's entry while that page is open, otherwise null. */
+    val entryDetail: EntryDetailState? = null,
     /** The add-or-edit page's form while that page is open, otherwise null. */
     val entryForm: EntryForm? = null,
 ) {
@@ -92,6 +97,7 @@ class TrackerViewModel(
     private val walletRepository: WalletRepository,
     private val categoryRepository: CategoryRepository,
     private val transactionRepository: TransactionRepository,
+    private val authRepository: AuthRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TrackerUiState())
@@ -106,6 +112,9 @@ class TrackerViewModel(
 
     /** The entry form's category load, cancelled if the form is closed or reopened. */
     private var categoryJob: Job? = null
+
+    /** The details page's history load, cancelled if the page is closed or reopened. */
+    private var historyJob: Job? = null
 
     init {
         refresh()
@@ -295,6 +304,90 @@ class TrackerViewModel(
         _uiState.update { it.copy(actionError = null) }
     }
 
+    // ---- The details page, and the PIN check in front of Edit ----
+
+    /**
+     * Opens an entry's details. Only a corrected entry has a history worth
+     * fetching; any other entry's history is just itself.
+     */
+    fun onEntryClick(entry: TransactionResponse) {
+        historyJob?.cancel()
+        _uiState.update { it.copy(entryDetail = EntryDetailState(entry = entry)) }
+        if (entry.isAdjusted) loadEntryHistory()
+    }
+
+    fun retryEntryHistory() {
+        loadEntryHistory()
+    }
+
+    /** Back from the details page. Ignored while the PIN is being checked. */
+    fun onDismissEntryDetail() {
+        if (_uiState.value.entryDetail?.isCheckingPin == true) return
+        historyJob?.cancel()
+        _uiState.update { it.copy(entryDetail = null) }
+    }
+
+    /** Edit asks for the PIN every time, before the form opens. */
+    fun onEditEntryClick() {
+        updateDetail { it.copy(isPinOpen = true, pin = "", pinError = null) }
+    }
+
+    fun onEntryPinChange(value: String) {
+        if (!value.all(Char::isDigit)) return
+        updateDetail { it.copy(pin = value.take(PIN_LENGTH), pinError = null) }
+    }
+
+    fun onDismissEntryPin() {
+        updateDetail { detail ->
+            if (detail.isCheckingPin) detail else detail.copy(isPinOpen = false, pin = "", pinError = null)
+        }
+    }
+
+    fun confirmEntryPin() {
+        val detail = _uiState.value.entryDetail ?: return
+        if (!detail.canCheckPin) return
+
+        viewModelScope.launch {
+            updateDetail { it.copy(isCheckingPin = true, pinError = null) }
+
+            when (val result = authRepository.verifyPin(detail.pin)) {
+                is ApiResult.Success -> {
+                    updateDetail { it.copy(isCheckingPin = false, isPinOpen = false, pin = "") }
+                    // The details page opens the form page as soon as this is set.
+                    openFormFor(detail.entry)
+                }
+                is ApiResult.Failure -> updateDetail {
+                    it.copy(isCheckingPin = false, pin = "", pinError = result.message)
+                }
+            }
+        }
+    }
+
+    private fun loadEntryHistory() {
+        val entryId = _uiState.value.entryDetail?.entry?.id ?: return
+        historyJob?.cancel()
+        updateDetail { it.copy(isLoadingHistory = true, historyError = null) }
+
+        historyJob = viewModelScope.launch {
+            when (val result = transactionRepository.history(entryId)) {
+                is ApiResult.Success -> updateDetail {
+                    it.copy(isLoadingHistory = false, history = result.data)
+                }
+                is ApiResult.Failure -> updateDetail {
+                    it.copy(isLoadingHistory = false, historyError = result.message)
+                }
+            }
+        }
+    }
+
+    /** Changes the details page's state if it is open, and does nothing otherwise. */
+    private fun updateDetail(transform: (EntryDetailState) -> EntryDetailState) {
+        _uiState.update { state ->
+            val detail = state.entryDetail ?: return@update state
+            state.copy(entryDetail = transform(detail))
+        }
+    }
+
     // ---- The add-or-edit transaction page ----
 
     /**
@@ -324,7 +417,7 @@ class TrackerViewModel(
     }
 
     /** Opens the form filled in with an existing entry, ready to correct. */
-    fun onEntryClick(entry: TransactionResponse) {
+    private fun openFormFor(entry: TransactionResponse) {
         val type = entry.entryType
 
         _uiState.update {
@@ -357,13 +450,13 @@ class TrackerViewModel(
             if (form.isOpening || type == EntryType.Opening) {
                 form
             } else {
+                // An expense category can't come along to an income, or the
+                // other way round, so the choice is cleared when it doesn't fit.
+                val keepsCategory = form.categoriesFor(type).any { it.id == form.topCategoryId }
                 form.copy(
                     type = type,
-                    // An expense category can't come along to an income, or the
-                    // other way round, so the choice is cleared when it doesn't fit.
-                    categoryId = form.categoryId?.takeIf { id ->
-                        form.categoriesFor(type).any { it.id == id }
-                    },
+                    topCategoryId = form.topCategoryId.takeIf { keepsCategory },
+                    categoryId = form.categoryId.takeIf { keepsCategory },
                     error = null,
                 )
             }
@@ -376,8 +469,31 @@ class TrackerViewModel(
         }
     }
 
-    fun onEntryCategoryChange(categoryId: Int) {
-        updateForm { it.copy(categoryId = categoryId, error = null) }
+    /** A top-level category from the Category field. */
+    fun onEntryCategoryChange(topCategoryId: Int) {
+        updateForm { form ->
+            val chosen = form.availableCategories.firstOrNull { it.id == topCategoryId }
+            if (chosen == null || chosen.id == form.topCategoryId) {
+                form
+            } else {
+                form.copy(
+                    topCategoryId = chosen.id,
+                    categoryId = when {
+                        // Filed under directly when there is nothing beneath it.
+                        !chosen.hasSubcategories -> chosen.id
+                        // With only one subcategory there is nothing to choose.
+                        chosen.subcategories.size == 1 -> chosen.subcategories.first().id
+                        else -> null
+                    },
+                    error = null,
+                )
+            }
+        }
+    }
+
+    /** A subcategory from the Sub-category field. */
+    fun onEntrySubcategoryChange(subcategoryId: Int) {
+        updateForm { it.copy(categoryId = subcategoryId, error = null) }
     }
 
     fun onEntryAmountChange(value: String) {
@@ -494,10 +610,14 @@ class TrackerViewModel(
 
         categoryJob = viewModelScope.launch {
             when (val result = categoryRepository.listForTracker(trackerId)) {
-                is ApiResult.Success -> updateForm {
-                    it.copy(
+                is ApiResult.Success -> updateForm { form ->
+                    val options = categoryOptions(result.data, keepId)
+                    form.copy(
                         isLoadingCategories = false,
-                        categories = categoryOptions(result.data, keepId),
+                        categories = options,
+                        // When correcting, the Category field starts on the
+                        // entry's own category, or on its subcategory's parent.
+                        topCategoryId = form.topCategoryId ?: options.topCategoryFor(form.categoryId),
                     )
                 }
                 is ApiResult.Failure -> updateForm {
@@ -508,7 +628,10 @@ class TrackerViewModel(
     }
 
     private fun closeEntryFormAndRefresh() {
-        _uiState.update { it.copy(entryForm = null) }
+        // The details page closes too: the version it showed has just been
+        // replaced or deleted, so the list is where the user goes back to.
+        historyJob?.cancel()
+        _uiState.update { it.copy(entryForm = null, entryDetail = null) }
         // Balances, lists and the overview all change with an entry.
         refresh()
     }
@@ -527,6 +650,7 @@ class TrackerViewModel(
             walletRepository: WalletRepository,
             categoryRepository: CategoryRepository,
             transactionRepository: TransactionRepository,
+            authRepository: AuthRepository,
         ) = viewModelFactory {
             initializer {
                 TrackerViewModel(
@@ -534,6 +658,7 @@ class TrackerViewModel(
                     walletRepository,
                     categoryRepository,
                     transactionRepository,
+                    authRepository,
                 )
             }
         }

@@ -40,6 +40,7 @@ import com.abigailcandido.budgettracker.ui.categories.AddCategoryScreen
 import com.abigailcandido.budgettracker.ui.categories.AddGlobalCategoryScreen
 import com.abigailcandido.budgettracker.ui.home.HomeScreen
 import com.abigailcandido.budgettracker.ui.navigation.CategoryList
+import com.abigailcandido.budgettracker.ui.navigation.EntryDetail
 import com.abigailcandido.budgettracker.ui.navigation.EntryEdit
 import com.abigailcandido.budgettracker.ui.navigation.Home
 import com.abigailcandido.budgettracker.ui.navigation.TrackerDetail
@@ -52,6 +53,7 @@ import com.abigailcandido.budgettracker.ui.pin.PinEntryScreen
 import com.abigailcandido.budgettracker.ui.pin.PinSetupScreen
 import com.abigailcandido.budgettracker.ui.pin.PinViewModel
 import com.abigailcandido.budgettracker.ui.theme.BudgetTrackerTheme
+import com.abigailcandido.budgettracker.ui.trackers.EntryDetailScreen
 import com.abigailcandido.budgettracker.ui.trackers.EntryEditScreen
 import com.abigailcandido.budgettracker.ui.trackers.NewTrackerScreen
 import com.abigailcandido.budgettracker.ui.trackers.TrackerListViewModel
@@ -140,6 +142,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     else -> SignedInNavHost(
+                        authRepository = authRepository,
                         trackerRepository = trackerRepository,
                         walletRepository = walletRepository,
                         categoryRepository = categoryRepository,
@@ -162,6 +165,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun SignedInNavHost(
+    authRepository: AuthRepository,
     trackerRepository: TrackerRepository,
     walletRepository: WalletRepository,
     categoryRepository: CategoryRepository,
@@ -169,6 +173,18 @@ private fun SignedInNavHost(
     onSignOut: () -> Unit,
 ) {
     val navController = rememberNavController()
+
+    // The tracker screen and its details and form pages share one ViewModel,
+    // so all three make it the same way.
+    val trackerFactory = { trackerId: Int ->
+        TrackerViewModel.factory(
+            trackerId,
+            walletRepository,
+            categoryRepository,
+            transactionRepository,
+            authRepository,
+        )
+    }
 
     NavHost(navController = navController, startDestination = Home) {
 
@@ -296,12 +312,7 @@ private fun SignedInNavHost(
             val route: TrackerDetail = backStackEntry.toRoute()
 
             val trackerViewModel: TrackerViewModel = viewModel(
-                factory = TrackerViewModel.factory(
-                    route.trackerId,
-                    walletRepository,
-                    categoryRepository,
-                    transactionRepository,
-                ),
+                factory = trackerFactory(route.trackerId),
             )
             val trackerState by trackerViewModel.uiState.collectAsState()
 
@@ -336,9 +347,51 @@ private fun SignedInNavHost(
                 },
                 onEntryClick = { entry ->
                     trackerViewModel.onEntryClick(entry)
-                    navController.navigate(EntryEdit(route.trackerId)) { launchSingleTop = true }
+                    navController.navigate(EntryDetail(route.trackerId)) { launchSingleTop = true }
                 },
             )
+        }
+
+        composable<EntryDetail> { entry ->
+            val route: EntryDetail = entry.toRoute()
+            // Borrows the tracker screen's ViewModel, like the form page below.
+            val trackerEntry = remember(entry) { navController.getBackStackEntry<TrackerDetail>() }
+            val trackerViewModel: TrackerViewModel = viewModel(
+                viewModelStoreOwner = trackerEntry,
+                factory = trackerFactory(route.trackerId),
+            )
+            val trackerState by trackerViewModel.uiState.collectAsState()
+            val detail = trackerState.entryDetail
+
+            // Closed by Back. After a correction or a deletion, the form page
+            // closes this page along with itself.
+            val isDetailOpen = detail != null
+            LaunchedEffect(isDetailOpen) {
+                if (!isDetailOpen) {
+                    navController.popBackStack<EntryDetail>(inclusive = true)
+                }
+            }
+
+            // The PIN was accepted and the form is ready, so open its page.
+            val isFormOpen = trackerState.entryForm != null
+            LaunchedEffect(isFormOpen) {
+                if (isFormOpen) {
+                    navController.navigate(EntryEdit(route.trackerId)) { launchSingleTop = true }
+                }
+            }
+
+            if (detail != null) {
+                EntryDetailScreen(
+                    detail = detail,
+                    showsCurrency = trackerState.showsCurrency,
+                    onBack = trackerViewModel::onDismissEntryDetail,
+                    onEditClick = trackerViewModel::onEditEntryClick,
+                    onPinChange = trackerViewModel::onEntryPinChange,
+                    onConfirmPin = trackerViewModel::confirmEntryPin,
+                    onDismissPin = trackerViewModel::onDismissEntryPin,
+                    onRetryHistory = trackerViewModel::retryEntryHistory,
+                )
+            }
         }
 
         composable<EntryEdit> { entry ->
@@ -348,21 +401,22 @@ private fun SignedInNavHost(
             val trackerEntry = remember(entry) { navController.getBackStackEntry<TrackerDetail>() }
             val trackerViewModel: TrackerViewModel = viewModel(
                 viewModelStoreOwner = trackerEntry,
-                factory = TrackerViewModel.factory(
-                    route.trackerId,
-                    walletRepository,
-                    categoryRepository,
-                    transactionRepository,
-                ),
+                factory = trackerFactory(route.trackerId),
             )
             val trackerState by trackerViewModel.uiState.collectAsState()
             val form = trackerState.entryForm
 
             // The ViewModel closes the form after a save or a delete, or on Cancel.
-            // Either way the page has nothing left to show, so it closes too.
+            // Either way this page has nothing left to show, so it closes. After a
+            // save or a delete the details page has been closed as well, since the
+            // version it showed was replaced, so it goes too. A new entry has no
+            // details page under it, and that pop simply finds nothing to do.
             val isFormOpen = form != null
             LaunchedEffect(isFormOpen) {
                 if (!isFormOpen) {
+                    if (trackerState.entryDetail == null) {
+                        navController.popBackStack<EntryDetail>(inclusive = true)
+                    }
                     navController.popBackStack<EntryEdit>(inclusive = true)
                 }
             }
@@ -374,6 +428,7 @@ private fun SignedInNavHost(
                     onTypeChange = trackerViewModel::onEntryTypeChange,
                     onWalletChange = trackerViewModel::onEntryWalletChange,
                     onCategoryChange = trackerViewModel::onEntryCategoryChange,
+                    onSubcategoryChange = trackerViewModel::onEntrySubcategoryChange,
                     onAmountChange = trackerViewModel::onEntryAmountChange,
                     onDateChange = trackerViewModel::onEntryDateChange,
                     onNoteChange = trackerViewModel::onEntryNoteChange,

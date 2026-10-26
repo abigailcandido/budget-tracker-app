@@ -89,5 +89,9 @@ class TransactionRepository(
     suspend fun delete(transactionId: Int): ApiResult<Unit> =
         tokenStore.withToken { token -> api.delete(token, transactionId) }
 
+    /** Every version of an entry and every reversal, oldest first. */
+    suspend fun history(transactionId: Int): ApiResult<List<TransactionResponse>> =
+        tokenStore.withToken { token -> api.history(token, transactionId) }
+
     private fun String?.cleaned(): String? = this?.trim()?.takeIf { it.isNotEmpty() }
 }

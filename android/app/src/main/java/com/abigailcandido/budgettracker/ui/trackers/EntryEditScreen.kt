@@ -47,7 +47,7 @@ import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import java.time.LocalDate
 
 /** Which chooser is open on the page, if any. */
-private enum class Picker { Wallet, Category, Date }
+private enum class Picker { Wallet, Category, Subcategory, Date }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,6 +57,7 @@ fun EntryEditScreen(
     onTypeChange: (EntryType) -> Unit,
     onWalletChange: (Int) -> Unit,
     onCategoryChange: (Int) -> Unit,
+    onSubcategoryChange: (Int) -> Unit,
     onAmountChange: (String) -> Unit,
     onDateChange: (LocalDate) -> Unit,
     onNoteChange: (String) -> Unit,
@@ -86,7 +87,8 @@ fun EntryEditScreen(
     }
     val wallet = wallets.firstOrNull { it.id == form.walletId }
     val currency = wallet?.currency ?: form.currency.orEmpty()
-    val category = form.availableCategories.firstOrNull { it.id == form.categoryId }
+    val selectedCategory = form.selectedCategory
+    val selectedSubcategory = selectedCategory?.subcategories?.firstOrNull { it.id == form.categoryId }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -180,8 +182,10 @@ fun EntryEditScreen(
             if (!form.isOpening) {
                 CategorySection(
                     form = form,
-                    selectedLabel = category?.label,
-                    onOpen = { openPicker = Picker.Category },
+                    selectedCategory = selectedCategory,
+                    selectedSubcategory = selectedSubcategory,
+                    onOpenCategory = { openPicker = Picker.Category },
+                    onOpenSubcategory = { openPicker = Picker.Subcategory },
                     onRetry = onRetryCategories,
                 )
             }
@@ -247,11 +251,22 @@ fun EntryEditScreen(
 
         Picker.Category -> OptionDialog(
             title = if (form.type == EntryType.Income) "Income category" else "Expense category",
-            options = form.availableCategories.map { it.id to it.label },
-            selectedId = form.categoryId,
+            options = form.availableCategories.map { it.id to it.name },
+            selectedId = form.topCategoryId,
             onSelect = { id ->
                 openPicker = null
                 onCategoryChange(id)
+            },
+            onDismiss = { openPicker = null },
+        )
+
+        Picker.Subcategory -> OptionDialog(
+            title = selectedCategory?.name ?: "Sub-category",
+            options = selectedCategory?.subcategories.orEmpty().map { it.id to it.name },
+            selectedId = form.categoryId,
+            onSelect = { id ->
+                openPicker = null
+                onSubcategoryChange(id)
             },
             onDismiss = { openPicker = null },
         )
@@ -293,12 +308,17 @@ fun EntryEditScreen(
     }
 }
 
-/** The category field, or what to do when there is nothing to choose yet. */
+/**
+ * The Category field, and the Sub-category field under it when the chosen
+ * category has subcategories. Or what to do when there is nothing to choose.
+ */
 @Composable
 private fun CategorySection(
     form: EntryForm,
-    selectedLabel: String?,
-    onOpen: () -> Unit,
+    selectedCategory: CategoryOption?,
+    selectedSubcategory: SubcategoryOption?,
+    onOpenCategory: () -> Unit,
+    onOpenSubcategory: () -> Unit,
     onRetry: () -> Unit,
 ) {
     val kindWord = if (form.type == EntryType.Income) "income" else "expense"
@@ -327,12 +347,23 @@ private fun CategorySection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        else -> PickerField(
-            label = "Category",
-            value = selectedLabel ?: "Choose a category",
-            enabled = !form.isBusy,
-            onClick = onOpen,
-        )
+        else -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            PickerField(
+                label = "Category",
+                value = selectedCategory?.name ?: "Choose a category",
+                enabled = !form.isBusy,
+                onClick = onOpenCategory,
+            )
+            // Only a category with subcategories asks for one of them.
+            if (selectedCategory != null && selectedCategory.hasSubcategories) {
+                PickerField(
+                    label = "Sub-category",
+                    value = selectedSubcategory?.name ?: "Choose a sub-category",
+                    enabled = !form.isBusy,
+                    onClick = onOpenSubcategory,
+                )
+            }
+        }
     }
 }
 

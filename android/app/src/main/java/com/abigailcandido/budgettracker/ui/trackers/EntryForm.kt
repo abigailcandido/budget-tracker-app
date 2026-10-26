@@ -18,13 +18,26 @@ private val AMOUNT_PATTERN = Regex("^\\d{0,10}(\\.\\d{0,2})?$")
 /** The same, with an optional leading minus: a wallet can open owing money. */
 private val OPENING_AMOUNT_PATTERN = Regex("^-?\\d{0,10}(\\.\\d{0,2})?$")
 
-/** One choice in the category picker. */
+/** A choice in the Sub-category picker. */
+data class SubcategoryOption(
+    val id: Int,
+    val name: String,
+)
+
+/**
+ * A choice in the Category picker, which lists top-level categories only. One
+ * with subcategories is a heading: the entry is filed under whichever of its
+ * subcategories is chosen next.
+ */
 data class CategoryOption(
     val id: Int,
-    /** "Bills › Electricity" for a subcategory, or just "Groceries". */
-    val label: String,
+    val name: String,
     val kind: CategoryKind,
-)
+    val subcategories: List<SubcategoryOption> = emptyList(),
+) {
+    val hasSubcategories: Boolean
+        get() = subcategories.isNotEmpty()
+}
 
 /**
  * The add-or-edit page's form. It lives in the tracker screen's ViewModel, so
@@ -40,6 +53,12 @@ data class EntryForm(
      * same currency, so the wallet choices are limited to this one.
      */
     val currency: String? = null,
+    /** The top-level category showing in the Category field. */
+    val topCategoryId: Int? = null,
+    /**
+     * The category the entry is filed under: the top-level one itself, or
+     * the subcategory chosen under it.
+     */
     val categoryId: Int? = null,
     /**
      * The category the entry had when the page opened. It stays on offer even
@@ -72,6 +91,10 @@ data class EntryForm(
     val availableCategories: List<CategoryOption>
         get() = categoriesFor(type)
 
+    /** The top-level category chosen in the Category field, if it fits this kind. */
+    val selectedCategory: CategoryOption?
+        get() = availableCategories.firstOrNull { it.id == topCategoryId }
+
     fun categoriesFor(entryType: EntryType): List<CategoryOption> {
         val kind = when (entryType) {
             EntryType.Expense -> CategoryKind.Expense
@@ -84,6 +107,20 @@ data class EntryForm(
     fun acceptsAmount(value: String): Boolean =
         if (isOpening) OPENING_AMOUNT_PATTERN.matches(value) else AMOUNT_PATTERN.matches(value)
 
+    /**
+     * A category without subcategories is complete once chosen; one with
+     * subcategories also needs one of them.
+     */
+    private val hasCompleteCategory: Boolean
+        get() {
+            val chosen = selectedCategory ?: return false
+            return if (chosen.hasSubcategories) {
+                chosen.subcategories.any { it.id == categoryId }
+            } else {
+                categoryId == chosen.id
+            }
+        }
+
     val canSave: Boolean
         get() {
             if (isBusy) return false
@@ -92,34 +129,54 @@ data class EntryForm(
                 // An opening balance of zero is deleted, not saved.
                 value.signum() != 0
             } else {
-                value.signum() > 0 &&
-                        walletId != null &&
-                        availableCategories.any { it.id == categoryId }
+                value.signum() > 0 && walletId != null && hasCompleteCategory
             }
         }
 }
 
 /**
- * Turns a tracker's categories into picker choices. Only switched-on
- * categories with nothing under them are offered, because entries attach to
- * those alone. Sorting by the full label keeps each parent's subcategories
- * together. keepId stays on offer whatever its switch says.
+ * Turns a tracker's categories into the two pickers' choices. A top-level
+ * category without subcategories is offered if it is switched on. One with
+ * subcategories is offered with its switched-on subcategories, and left out if
+ * it has none. keepId stays on offer whatever its switch says.
  */
 fun categoryOptions(
     categories: List<TrackerCategoryResponse>,
     keepId: Int?,
 ): List<CategoryOption> {
-    val namesById = categories.associate { it.id to it.name }
+    val childrenByParent = categories
+        .filter { it.parentId != null }
+        .groupBy { it.parentId }
 
     return categories
-        .filter { !it.hasChildren && (it.isEnabled || it.id == keepId) }
-        .map { category ->
-            val parentName = category.parentId?.let { namesById[it] }
-            CategoryOption(
-                id = category.id,
-                label = if (parentName != null) "$parentName › ${category.name}" else category.name,
-                kind = category.categoryKind,
-            )
+        .filter { it.parentId == null }
+        .mapNotNull { top ->
+            if (!top.hasChildren) {
+                if (top.isEnabled || top.id == keepId) {
+                    CategoryOption(top.id, top.name, top.categoryKind)
+                } else {
+                    null
+                }
+            } else {
+                val subcategories = childrenByParent[top.id].orEmpty()
+                    .filter { it.isEnabled || it.id == keepId }
+                    .map { SubcategoryOption(it.id, it.name) }
+                    .sortedBy { it.name.lowercase() }
+
+                if (subcategories.isEmpty()) {
+                    null
+                } else {
+                    CategoryOption(top.id, top.name, top.categoryKind, subcategories)
+                }
+            }
         }
-        .sortedBy { it.label.lowercase() }
+        .sortedBy { it.name.lowercase() }
+}
+
+/** The top-level category an entry's category sits under: itself, or its parent. */
+fun List<CategoryOption>.topCategoryFor(categoryId: Int?): Int? {
+    if (categoryId == null) return null
+    return firstOrNull { option ->
+        option.id == categoryId || option.subcategories.any { it.id == categoryId }
+    }?.id
 }

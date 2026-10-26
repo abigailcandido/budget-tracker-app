@@ -55,10 +55,20 @@ data class TransactionResponse(
     val description: String? = null,
     @SerialName("transaction_date") val transactionDate: String,
     @SerialName("created_at") val createdAt: String,
+    // Where this row sits in the entry's history. A correction names the
+    // version it replaced, a reversal names the version it cancels, and
+    // isReversed marks a version that has since been corrected or deleted.
+    @SerialName("replaces_id") val replacesId: Int? = null,
+    @SerialName("reverses_id") val reversesId: Int? = null,
+    @SerialName("is_reversed") val isReversed: Boolean = false,
 )
 
 val TransactionResponse.entryType: EntryType
     get() = EntryType.fromApi(type)
+
+/** A corrected version of an earlier entry. The lists tag it "Adjusted". */
+val TransactionResponse.isAdjusted: Boolean
+    get() = replacesId != null
 
 @Serializable
 data class WalletSummary(
