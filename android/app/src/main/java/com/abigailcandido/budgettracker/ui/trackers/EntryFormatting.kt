@@ -33,12 +33,18 @@ fun signedAmount(entry: TransactionResponse): String = when (entry.entryType) {
     EntryType.Opening -> formatMoney(entry.amount)
 }
 
-/** "Bills › Electricity", "Groceries", or "Opening balance". */
-fun entryTitle(entry: TransactionResponse): String = when {
-    entry.entryType == EntryType.Opening -> "Opening balance"
-    entry.parentCategoryName != null && entry.categoryName != null ->
-        "${entry.parentCategoryName} › ${entry.categoryName}"
-    else -> entry.categoryName ?: "No category"
+/**
+ * "Bills › Electricity", "Groceries", or "Opening balance". An entry under
+ * Others shows what it was too: "Others: Pet food", "Bills › Others: Internet".
+ */
+fun entryTitle(entry: TransactionResponse): String {
+    val category = when {
+        entry.entryType == EntryType.Opening -> return "Opening balance"
+        entry.parentCategoryName != null && entry.categoryName != null ->
+            "${entry.parentCategoryName} › ${entry.categoryName}"
+        else -> entry.categoryName ?: "No category"
+    }
+    return if (entry.otherName != null) "$category: ${entry.otherName}" else category
 }
 
 /** "2026-10-25" becomes "Today", "Yesterday", or "Fri, 23 Oct 2026". */

@@ -5,6 +5,7 @@ import com.abigailcandido.budgettracker.data.remote.ApiResult
 import com.abigailcandido.budgettracker.data.remote.CategoryApi
 import com.abigailcandido.budgettracker.data.remote.CategoryKind
 import com.abigailcandido.budgettracker.data.remote.CategoryResponse
+import com.abigailcandido.budgettracker.data.remote.OthersCategoryRequest
 import com.abigailcandido.budgettracker.data.remote.TrackerCategoryResponse
 
 class CategoryRepository(
@@ -75,6 +76,24 @@ class CategoryRepository(
                 mainTrackerId = null,
                 trackerIds = null,
                 subcategoryNames = null,
+            )
+        }
+
+    /**
+     * The Others category to file an entry under: the top-level one of a kind
+     * when parentId is null, or the one under that parent. Made on the server
+     * the first time it is needed, and switched on in this tracker.
+     */
+    suspend fun othersCategory(
+        trackerId: Int,
+        kind: CategoryKind,
+        parentId: Int?,
+    ): ApiResult<TrackerCategoryResponse> =
+        tokenStore.withToken { token ->
+            api.othersCategory(
+                token,
+                trackerId,
+                OthersCategoryRequest(kind = kind.apiValue, parentId = parentId),
             )
         }
 

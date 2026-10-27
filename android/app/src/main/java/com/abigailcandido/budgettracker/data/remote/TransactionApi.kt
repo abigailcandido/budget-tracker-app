@@ -65,9 +65,28 @@ class TransactionApi(private val client: HttpClient = ApiClient.httpClient) {
             }
         }
 
-    suspend fun delete(token: String, transactionId: Int): ApiResult<Unit> =
+    suspend fun delete(
+        token: String,
+        transactionId: Int,
+        request: TransactionDeleteRequest,
+    ): ApiResult<Unit> =
         callReturningNothing("Could not delete the entry") {
-            client.delete("transactions/$transactionId") { bearer(token) }
+            client.delete("transactions/$transactionId") {
+                bearer(token)
+                setBody(request)
+            }
+        }
+
+    suspend fun promoteOther(
+        token: String,
+        transactionId: Int,
+        request: PromoteOtherRequest,
+    ): ApiResult<PromoteOtherResponse> =
+        callReturningBody("Could not add it to your categories") {
+            client.post("transactions/$transactionId/promote-other") {
+                bearer(token)
+                setBody(request)
+            }
         }
 
     suspend fun history(

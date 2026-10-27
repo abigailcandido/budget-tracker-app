@@ -25,6 +25,8 @@ data class TransactionCreateRequest(
     @SerialName("category_id") val categoryId: Int,
     @SerialName("transaction_date") val transactionDate: String,
     val description: String? = null,
+    // Only under an Others category: what the entry was, such as "Pet food".
+    @SerialName("other_name") val otherName: String? = null,
 )
 
 @Serializable
@@ -39,6 +41,34 @@ data class TransactionUpdateRequest(
     // No default, so it is always sent — null included. That is how a
     // description the user cleared actually gets cleared on the server.
     val description: String?,
+    // Always sent too, so moving an entry out of Others drops its name.
+    @SerialName("other_name") val otherName: String?,
+    // Why the entry is being corrected. Optional, and left out when empty.
+    val reason: String? = null,
+)
+
+/** Deleting needs a reason and the PIN, and the server checks both. */
+@Serializable
+data class TransactionDeleteRequest(
+    val reason: String,
+    val pin: String,
+)
+
+@Serializable
+data class PromoteOtherRequest(
+    // Left out to use the entry's own Others name.
+    val name: String? = null,
+    val pin: String,
+)
+
+@Serializable
+data class PromoteOtherResponse(
+    @SerialName("category_id") val categoryId: Int,
+    @SerialName("category_name") val categoryName: String,
+    // False when a category with that name already existed and was used.
+    val created: Boolean,
+    // How many Others entries with that name moved into it.
+    val moved: Int,
 )
 
 @Serializable
@@ -61,6 +91,11 @@ data class TransactionResponse(
     @SerialName("replaces_id") val replacesId: Int? = null,
     @SerialName("reverses_id") val reversesId: Int? = null,
     @SerialName("is_reversed") val isReversed: Boolean = false,
+    // Deleted entries stay in the lists, marked as deleted and counting for nothing.
+    @SerialName("is_deleted") val isDeleted: Boolean = false,
+    @SerialName("other_name") val otherName: String? = null,
+    // On a reversal: why the entry was corrected or deleted.
+    val reason: String? = null,
 )
 
 val TransactionResponse.entryType: EntryType

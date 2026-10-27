@@ -53,6 +53,19 @@ class CategoryApi(private val client: HttpClient = ApiClient.httpClient) {
             }
         }
 
+    /** The tracker's Others category, made on the server the first time it is needed. */
+    suspend fun othersCategory(
+        token: String,
+        trackerId: Int,
+        request: OthersCategoryRequest,
+    ): ApiResult<TrackerCategoryResponse> =
+        callReturningBody("Could not file this under Others") {
+            client.post("trackers/$trackerId/categories/others") {
+                bearer(token)
+                setBody(request)
+            }
+        }
+
     suspend fun rename(
         token: String,
         categoryId: Int,

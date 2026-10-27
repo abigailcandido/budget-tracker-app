@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
@@ -58,12 +59,17 @@ fun EntryEditScreen(
     onWalletChange: (Int) -> Unit,
     onCategoryChange: (Int) -> Unit,
     onSubcategoryChange: (Int) -> Unit,
+    onOtherNameChange: (String) -> Unit,
+    onUseCategoryMatch: () -> Unit,
     onAmountChange: (String) -> Unit,
     onDateChange: (LocalDate) -> Unit,
     onNoteChange: (String) -> Unit,
+    onReasonChange: (String) -> Unit,
     onRetryCategories: () -> Unit,
     onSave: () -> Unit,
     onDeleteClick: () -> Unit,
+    onDeleteReasonChange: (String) -> Unit,
+    onDeletePinChange: (String) -> Unit,
     onConfirmDelete: () -> Unit,
     onDismissDelete: () -> Unit,
     onCancel: () -> Unit,
@@ -88,7 +94,7 @@ fun EntryEditScreen(
     val wallet = wallets.firstOrNull { it.id == form.walletId }
     val currency = wallet?.currency ?: form.currency.orEmpty()
     val selectedCategory = form.selectedCategory
-    val selectedSubcategory = selectedCategory?.subcategories?.firstOrNull { it.id == form.categoryId }
+    val selectedSubcategory = selectedCategory?.subcategories?.firstOrNull { it.id == form.subcategoryId }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -99,7 +105,8 @@ fun EntryEditScreen(
                         when {
                             form.isNew -> "Add transaction"
                             form.isOpening -> "Edit opening balance"
-                            else -> "Edit transaction"
+                            form.type == EntryType.Income -> "Edit income"
+                            else -> "Edit expense"
                         }
                     )
                 },
@@ -135,7 +142,9 @@ fun EntryEditScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (!form.isOpening) {
+            // Only a new entry chooses between expense and income. A correction
+            // keeps its type, which the page title names instead.
+            if (form.isNew && !form.isOpening) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(EntryType.Expense to "Expense", EntryType.Income to "Income")
                         .forEach { (type, label) ->
@@ -186,6 +195,8 @@ fun EntryEditScreen(
                     selectedSubcategory = selectedSubcategory,
                     onOpenCategory = { openPicker = Picker.Category },
                     onOpenSubcategory = { openPicker = Picker.Subcategory },
+                    onOtherNameChange = onOtherNameChange,
+                    onUseCategoryMatch = onUseCategoryMatch,
                     onRetry = onRetryCategories,
                 )
             }
@@ -209,6 +220,22 @@ fun EntryEditScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
 
+            if (!form.isNew) {
+                OutlinedTextField(
+                    value = form.reason,
+                    onValueChange = onReasonChange,
+                    label = { Text("Reason for the change (optional)") },
+                    placeholder = { Text("Such as Wrong amount") },
+                    supportingText = { Text("Kept in the transaction's history.") },
+                    enabled = !form.isBusy,
+                    maxLines = 3,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
             if (form.error != null) {
                 Text(
                     text = form.error,
@@ -225,13 +252,7 @@ fun EntryEditScreen(
                         contentColor = MaterialTheme.colorScheme.error,
                     ),
                 ) {
-                    Text(
-                        when {
-                            form.isDeleting -> "Deleting…"
-                            form.isOpening -> "Delete opening balance"
-                            else -> "Delete transaction"
-                        }
-                    )
+                    Text(if (form.isOpening) "Delete opening balance" else "Delete transaction")
                 }
             }
         }
@@ -249,9 +270,10 @@ fun EntryEditScreen(
             onDismiss = { openPicker = null },
         )
 
+        // Both lists end with Others, for anything that has no category yet.
         Picker.Category -> OptionDialog(
             title = if (form.type == EntryType.Income) "Income category" else "Expense category",
-            options = form.availableCategories.map { it.id to it.name },
+            options = form.availableCategories.map { it.id to it.name } + (OTHERS_CHOICE to OTHERS_LABEL),
             selectedId = form.topCategoryId,
             onSelect = { id ->
                 openPicker = null
@@ -262,8 +284,9 @@ fun EntryEditScreen(
 
         Picker.Subcategory -> OptionDialog(
             title = selectedCategory?.name ?: "Sub-category",
-            options = selectedCategory?.subcategories.orEmpty().map { it.id to it.name },
-            selectedId = form.categoryId,
+            options = selectedCategory?.subcategories.orEmpty().map { it.id to it.name } +
+                    (OTHERS_CHOICE to OTHERS_LABEL),
+            selectedId = form.subcategoryId,
             onSelect = { id ->
                 openPicker = null
                 onSubcategoryChange(id)
@@ -284,33 +307,94 @@ fun EntryEditScreen(
     }
 
     if (form.isConfirmingDelete) {
-        AlertDialog(
-            onDismissRequest = onDismissDelete,
-            title = {
-                Text(
-                    if (form.isOpening) "Delete this opening balance?" else "Delete this transaction?"
-                )
-            },
-            text = {
-                Text(
-                    "It's removed permanently, and " +
-                            (wallet?.name ?: "the wallet") +
-                            "'s balance changes to match."
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = onConfirmDelete) { Text("Delete") }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismissDelete) { Text("Cancel") }
-            },
+        DeleteDialog(
+            form = form,
+            walletName = wallet?.name,
+            onReasonChange = onDeleteReasonChange,
+            onPinChange = onDeletePinChange,
+            onConfirm = onConfirmDelete,
+            onDismiss = onDismissDelete,
         )
     }
 }
 
 /**
- * The Category field, and the Sub-category field under it when the chosen
- * category has subcategories. Or what to do when there is nothing to choose.
+ * Deleting asks why, and for the PIN again. The entry is not erased: it stays
+ * in the list marked Deleted, and the reason is kept in its history.
+ */
+@Composable
+private fun DeleteDialog(
+    form: EntryForm,
+    walletName: String?,
+    onReasonChange: (String) -> Unit,
+    onPinChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(if (form.isOpening) "Delete this opening balance?" else "Delete this transaction?")
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "It stays in the list marked Deleted, with its history, and " +
+                            "stops counting towards ${walletName ?: "the wallet"}'s balance.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedTextField(
+                    value = form.deleteReason,
+                    onValueChange = onReasonChange,
+                    label = { Text("Reason") },
+                    placeholder = { Text("Such as Entered twice") },
+                    enabled = !form.isDeleting,
+                    maxLines = 3,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = form.deletePin,
+                    onValueChange = onPinChange,
+                    label = { Text("PIN") },
+                    singleLine = true,
+                    enabled = !form.isDeleting,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (form.deleteError != null) {
+                    Text(
+                        text = form.deleteError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                enabled = form.canConfirmDelete,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Text(if (form.isDeleting) "Deleting…" else "Delete")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !form.isDeleting) { Text("Cancel") }
+        },
+    )
+}
+
+/**
+ * The Category field, the Sub-category field under it when the chosen
+ * category has subcategories, and the "What is it?" field when either is
+ * Others.
  */
 @Composable
 private fun CategorySection(
@@ -319,6 +403,8 @@ private fun CategorySection(
     selectedSubcategory: SubcategoryOption?,
     onOpenCategory: () -> Unit,
     onOpenSubcategory: () -> Unit,
+    onOtherNameChange: (String) -> Unit,
+    onUseCategoryMatch: () -> Unit,
     onRetry: () -> Unit,
 ) {
     val kindWord = if (form.type == EntryType.Income) "income" else "expense"
@@ -340,34 +426,93 @@ private fun CategorySection(
             TextButton(onClick = onRetry) { Text("Try again") }
         }
 
-        form.availableCategories.isEmpty() -> Text(
-            text = "No $kindWord categories are switched on in this tracker yet. " +
-                    "Add or switch one on from Categories on the tracker screen.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
         else -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             PickerField(
                 label = "Category",
-                value = selectedCategory?.name ?: "Choose a category",
+                value = when {
+                    form.topCategoryId == OTHERS_CHOICE -> OTHERS_LABEL
+                    selectedCategory != null -> selectedCategory.name
+                    else -> "Choose a category"
+                },
                 enabled = !form.isBusy,
                 onClick = onOpenCategory,
+                supportingText = if (form.availableCategories.isEmpty()) {
+                    {
+                        Text(
+                            "No $kindWord categories are switched on in this tracker " +
+                                    "yet, so only Others is offered. Add or switch some " +
+                                    "on from Categories on the tracker screen."
+                        )
+                    }
+                } else {
+                    null
+                },
             )
             // Only a category with subcategories asks for one of them.
             if (selectedCategory != null && selectedCategory.hasSubcategories) {
                 PickerField(
                     label = "Sub-category",
-                    value = selectedSubcategory?.name ?: "Choose a sub-category",
+                    value = when {
+                        form.subcategoryId == OTHERS_CHOICE -> OTHERS_LABEL
+                        selectedSubcategory != null -> selectedSubcategory.name
+                        else -> "Choose a sub-category"
+                    },
                     enabled = !form.isBusy,
                     onClick = onOpenSubcategory,
+                )
+            }
+            if (form.isOthersChosen) {
+                OtherNameField(
+                    form = form,
+                    onValueChange = onOtherNameChange,
+                    onUseCategoryMatch = onUseCategoryMatch,
                 )
             }
         }
     }
 }
 
-/** A field that looks like the others but opens a chooser when tapped. */
+/**
+ * What an entry under Others was. A name that is already a category, in any
+ * mix of capitals, is refused, with a button to file the entry there instead.
+ */
+@Composable
+private fun OtherNameField(
+    form: EntryForm,
+    onValueChange: (String) -> Unit,
+    onUseCategoryMatch: () -> Unit,
+) {
+    // Nothing is called a problem until something has been typed.
+    val problem = form.otherNameProblem.takeIf { form.otherName.isNotBlank() }
+    val match = form.otherNameMatch
+
+    Column {
+        OutlinedTextField(
+            value = form.otherName,
+            onValueChange = onValueChange,
+            label = { Text("What is it?") },
+            placeholder = {
+                Text(if (form.type == EntryType.Income) "Such as Gift" else "Such as Pet food")
+            },
+            singleLine = true,
+            enabled = !form.isBusy,
+            isError = problem != null,
+            supportingText = {
+                Text(
+                    problem ?: "Saved under Others. You can add it to your categories " +
+                    "later, from its details."
+                )
+            },
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (match != null) {
+            TextButton(onClick = onUseCategoryMatch, enabled = !form.isBusy) {
+                Text("Use ${match.label} instead")
+            }
+        }
+    }
+}/** A field that looks like the others but opens a chooser when tapped. */
 @Composable
 private fun PickerField(
     label: String,

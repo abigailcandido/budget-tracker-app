@@ -3,8 +3,11 @@ package com.abigailcandido.budgettracker.data
 import com.abigailcandido.budgettracker.data.local.TokenStore
 import com.abigailcandido.budgettracker.data.remote.ApiResult
 import com.abigailcandido.budgettracker.data.remote.EntryType
+import com.abigailcandido.budgettracker.data.remote.PromoteOtherRequest
+import com.abigailcandido.budgettracker.data.remote.PromoteOtherResponse
 import com.abigailcandido.budgettracker.data.remote.TransactionApi
 import com.abigailcandido.budgettracker.data.remote.TransactionCreateRequest
+import com.abigailcandido.budgettracker.data.remote.TransactionDeleteRequest
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.TrackerSummaryResponse
 import com.abigailcandido.budgettracker.data.remote.TransactionUpdateRequest
@@ -42,6 +45,7 @@ class TransactionRepository(
         categoryId: Int,
         date: String,
         description: String?,
+        otherName: String? = null,
     ): ApiResult<TransactionResponse> =
         tokenStore.withToken { token ->
             api.create(
@@ -53,6 +57,7 @@ class TransactionRepository(
                     categoryId = categoryId,
                     transactionDate = date,
                     description = description.cleaned(),
+                    otherName = otherName.cleaned(),
                 ),
             )
         }
@@ -70,6 +75,8 @@ class TransactionRepository(
         amount: String,
         date: String,
         description: String?,
+        otherName: String? = null,
+        reason: String? = null,
     ): ApiResult<TransactionResponse> =
         tokenStore.withToken { token ->
             api.update(
@@ -82,12 +89,30 @@ class TransactionRepository(
                     amount = amount.trim(),
                     transactionDate = date,
                     description = description.cleaned(),
+                    otherName = otherName.cleaned(),
+                    reason = reason.cleaned(),
                 ),
             )
         }
 
-    suspend fun delete(transactionId: Int): ApiResult<Unit> =
-        tokenStore.withToken { token -> api.delete(token, transactionId) }
+    /** The entry stays in the list, marked deleted. The server checks the PIN. */
+    suspend fun delete(transactionId: Int, reason: String, pin: String): ApiResult<Unit> =
+        tokenStore.withToken { token ->
+            api.delete(token, transactionId, TransactionDeleteRequest(reason.trim(), pin))
+        }
+
+    /**
+     * Gives an Others entry a category of its own, named after it unless a
+     * different name is given, and moves every Others entry of that name into it.
+     */
+    suspend fun promoteOther(
+        transactionId: Int,
+        name: String?,
+        pin: String,
+    ): ApiResult<PromoteOtherResponse> =
+        tokenStore.withToken { token ->
+            api.promoteOther(token, transactionId, PromoteOtherRequest(name.cleaned(), pin))
+        }
 
     /** Every version of an entry and every reversal, oldest first. */
     suspend fun history(transactionId: Int): ApiResult<List<TransactionResponse>> =

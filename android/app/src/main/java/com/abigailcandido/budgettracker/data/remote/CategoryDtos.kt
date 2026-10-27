@@ -31,6 +31,14 @@ data class CategoryCreateRequest(
     @SerialName("subcategory_names") val subcategoryNames: List<String>? = null,
 )
 
+/** Which Others bucket: the top-level one of a kind, or the one under a parent. */
+@Serializable
+data class OthersCategoryRequest(
+    // Under a parent, the parent's kind is used whatever this says.
+    val kind: String,
+    @SerialName("parent_id") val parentId: Int? = null,
+)
+
 @Serializable
 data class CategoryNameRequest(
     val name: String,

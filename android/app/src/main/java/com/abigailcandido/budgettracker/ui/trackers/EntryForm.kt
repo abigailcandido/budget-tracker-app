@@ -4,10 +4,23 @@ import com.abigailcandido.budgettracker.data.remote.CategoryKind
 import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.TrackerCategoryResponse
 import com.abigailcandido.budgettracker.data.remote.categoryKind
+import com.abigailcandido.budgettracker.ui.pin.PIN_LENGTH
 import java.time.LocalDate
 
-/** The longest note the server keeps. */
+/** The longest note or reason the server keeps. */
 const val NOTE_MAX_LENGTH = 255
+
+/** The longest "What is it?" name the server keeps for an Others entry. */
+const val OTHER_NAME_MAX_LENGTH = 100
+
+/**
+ * The Others choice at the end of the Category and Sub-category lists. It is
+ * not a real id: the Others category it stands for is fetched from the
+ * server, and made there if need be, only when the entry is saved.
+ */
+const val OTHERS_CHOICE = -1
+
+const val OTHERS_LABEL = "Others"
 
 /**
  * Up to ten digits before the point and two after, which is the most the
@@ -27,17 +40,25 @@ data class SubcategoryOption(
 /**
  * A choice in the Category picker, which lists top-level categories only. One
  * with subcategories is a heading: the entry is filed under whichever of its
- * subcategories is chosen next.
+ * subcategories is chosen next, or under its Others.
  */
 data class CategoryOption(
     val id: Int,
     val name: String,
     val kind: CategoryKind,
+    val hasSubcategories: Boolean = false,
+    /** Its switched-on subcategories, not counting its Others. */
     val subcategories: List<SubcategoryOption> = emptyList(),
-) {
-    val hasSubcategories: Boolean
-        get() = subcategories.isNotEmpty()
-}
+)
+
+/** An existing category whose name was typed as an Others name. */
+data class CategoryMatch(
+    val topCategoryId: Int,
+    /** Null when the match is a top-level category. */
+    val subcategoryId: Int?,
+    /** "Groceries" or "Bills › Electricity". */
+    val label: String,
+)
 
 /**
  * The add-or-edit page's form. It lives in the tracker screen's ViewModel, so
@@ -53,13 +74,12 @@ data class EntryForm(
      * same currency, so the wallet choices are limited to this one.
      */
     val currency: String? = null,
-    /** The top-level category showing in the Category field. */
+    /** The Category field: a top-level category's id, or OTHERS_CHOICE. */
     val topCategoryId: Int? = null,
-    /**
-     * The category the entry is filed under: the top-level one itself, or
-     * the subcategory chosen under it.
-     */
-    val categoryId: Int? = null,
+    /** The Sub-category field, under a category that has them: an id, or OTHERS_CHOICE. */
+    val subcategoryId: Int? = null,
+    /** What an entry under Others was, such as "Pet food". */
+    val otherName: String = "",
     /**
      * The category the entry had when the page opened. It stays on offer even
      * if it has since been switched off, so correcting an old amount never
@@ -69,13 +89,19 @@ data class EntryForm(
     val amount: String = "",
     val date: LocalDate = LocalDate.now(),
     val note: String = "",
+    /** Why the entry is being corrected. Optional, and only asked when correcting. */
+    val reason: String = "",
     val categories: List<CategoryOption> = emptyList(),
     val isLoadingCategories: Boolean = false,
     val categoryLoadError: String? = null,
     val isSaving: Boolean = false,
-    val isDeleting: Boolean = false,
-    val isConfirmingDelete: Boolean = false,
     val error: String? = null,
+    // ---- The delete dialog ----
+    val isConfirmingDelete: Boolean = false,
+    val deleteReason: String = "",
+    val deletePin: String = "",
+    val isDeleting: Boolean = false,
+    val deleteError: String? = null,
 ) {
     val isNew: Boolean
         get() = editingId == null
@@ -91,9 +117,61 @@ data class EntryForm(
     val availableCategories: List<CategoryOption>
         get() = categoriesFor(type)
 
-    /** The top-level category chosen in the Category field, if it fits this kind. */
+    /** The top-level category chosen in the Category field, if it is a real one. */
     val selectedCategory: CategoryOption?
         get() = availableCategories.firstOrNull { it.id == topCategoryId }
+
+    /** Whether the entry is going under Others, at the top level or under a category. */
+    val isOthersChosen: Boolean
+        get() = topCategoryId == OTHERS_CHOICE ||
+                (selectedCategory?.hasSubcategories == true && subcategoryId == OTHERS_CHOICE)
+
+    /** The parent whose Others is chosen, or null for the top-level Others. */
+    val othersParentId: Int?
+        get() = if (topCategoryId == OTHERS_CHOICE) null else selectedCategory?.id
+
+    /** The real category the entry is filed under, when Others is not chosen. */
+    val leafCategoryId: Int?
+        get() {
+            val chosen = selectedCategory ?: return null
+            return when {
+                !chosen.hasSubcategories -> chosen.id
+                chosen.subcategories.any { it.id == subcategoryId } -> subcategoryId
+                else -> null
+            }
+        }
+
+    /**
+     * An existing category the typed Others name already belongs to,
+     * ignoring capitals and surrounding spaces. Its subcategories count too.
+     */
+    val otherNameMatch: CategoryMatch?
+        get() {
+            val typed = otherName.trim().lowercase()
+            if (typed.isEmpty()) return null
+
+            for (option in availableCategories) {
+                if (option.name.lowercase() == typed) {
+                    return CategoryMatch(option.id, null, option.name)
+                }
+                val sub = option.subcategories.firstOrNull { it.name.lowercase() == typed }
+                if (sub != null) {
+                    return CategoryMatch(option.id, sub.id, "${option.name} › ${sub.name}")
+                }
+            }
+            return null
+        }
+
+    /** Why the Others name cannot be saved yet, or null when it can. */
+    val otherNameProblem: String?
+        get() = when {
+            !isOthersChosen -> null
+            otherName.isBlank() -> "Say what it was, so it can be given a category later."
+            otherName.trim().equals(OTHERS_LABEL, ignoreCase = true) ->
+                "Say what it was, rather than just Others."
+            otherNameMatch != null -> "${otherNameMatch?.label} is already a category."
+            else -> null
+        }
 
     fun categoriesFor(entryType: EntryType): List<CategoryOption> {
         val kind = when (entryType) {
@@ -107,19 +185,8 @@ data class EntryForm(
     fun acceptsAmount(value: String): Boolean =
         if (isOpening) OPENING_AMOUNT_PATTERN.matches(value) else AMOUNT_PATTERN.matches(value)
 
-    /**
-     * A category without subcategories is complete once chosen; one with
-     * subcategories also needs one of them.
-     */
     private val hasCompleteCategory: Boolean
-        get() {
-            val chosen = selectedCategory ?: return false
-            return if (chosen.hasSubcategories) {
-                chosen.subcategories.any { it.id == categoryId }
-            } else {
-                categoryId == chosen.id
-            }
-        }
+        get() = if (isOthersChosen) otherNameProblem == null else leafCategoryId != null
 
     val canSave: Boolean
         get() {
@@ -132,13 +199,20 @@ data class EntryForm(
                 value.signum() > 0 && walletId != null && hasCompleteCategory
             }
         }
+
+    val canConfirmDelete: Boolean
+        get() = !isDeleting && deleteReason.isNotBlank() && deletePin.length == PIN_LENGTH
 }
 
+/** Whether a category is an Others bucket, whatever capitals it was given. */
+fun isOthersName(name: String): Boolean = name.trim().equals(OTHERS_LABEL, ignoreCase = true)
+
 /**
- * Turns a tracker's categories into the two pickers' choices. A top-level
- * category without subcategories is offered if it is switched on. One with
- * subcategories is offered with its switched-on subcategories, and left out if
- * it has none. keepId stays on offer whatever its switch says.
+ * Turns a tracker's categories into the two pickers' choices. Others buckets
+ * are left out, since every list ends with its own Others choice. A top-level
+ * category without subcategories is offered if it is switched on; one with
+ * subcategories is offered if any of them is. keepId stays on offer whatever
+ * its switch says.
  */
 fun categoryOptions(
     categories: List<TrackerCategoryResponse>,
@@ -149,7 +223,7 @@ fun categoryOptions(
         .groupBy { it.parentId }
 
     return categories
-        .filter { it.parentId == null }
+        .filter { it.parentId == null && !isOthersName(it.name) }
         .mapNotNull { top ->
             if (!top.hasChildren) {
                 if (top.isEnabled || top.id == keepId) {
@@ -158,25 +232,43 @@ fun categoryOptions(
                     null
                 }
             } else {
-                val subcategories = childrenByParent[top.id].orEmpty()
+                val usable = childrenByParent[top.id].orEmpty()
                     .filter { it.isEnabled || it.id == keepId }
-                    .map { SubcategoryOption(it.id, it.name) }
-                    .sortedBy { it.name.lowercase() }
 
-                if (subcategories.isEmpty()) {
+                if (usable.isEmpty()) {
                     null
                 } else {
-                    CategoryOption(top.id, top.name, top.categoryKind, subcategories)
+                    CategoryOption(
+                        id = top.id,
+                        name = top.name,
+                        kind = top.categoryKind,
+                        hasSubcategories = true,
+                        subcategories = usable
+                            .filter { !isOthersName(it.name) }
+                            .map { SubcategoryOption(it.id, it.name) }
+                            .sortedBy { it.name.lowercase() },
+                    )
                 }
             }
         }
         .sortedBy { it.name.lowercase() }
 }
 
-/** The top-level category an entry's category sits under: itself, or its parent. */
-fun List<CategoryOption>.topCategoryFor(categoryId: Int?): Int? {
-    if (categoryId == null) return null
-    return firstOrNull { option ->
-        option.id == categoryId || option.subcategories.any { it.id == categoryId }
-    }?.id
+/**
+ * Where the two fields start when correcting an entry: its own category, its
+ * subcategory's parent and the subcategory, or Others at either level.
+ */
+fun choiceFor(
+    categoryId: Int?,
+    categories: List<TrackerCategoryResponse>,
+): Pair<Int?, Int?> {
+    val category = categories.firstOrNull { it.id == categoryId } ?: return null to null
+    val parentId = category.parentId
+
+    return when {
+        parentId == null && isOthersName(category.name) -> OTHERS_CHOICE to null
+        parentId == null -> category.id to null
+        isOthersName(category.name) -> parentId to OTHERS_CHOICE
+        else -> parentId to category.id
+    }
 }

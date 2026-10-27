@@ -92,6 +92,7 @@ fun TrackerScreen(
     onConfirmDeleteWallet: () -> Unit,
     onDismissDeleteWallet: () -> Unit,
     onDismissActionError: () -> Unit,
+    onDismissNotice: () -> Unit,
     onRetry: () -> Unit,
     onAddEntryClick: () -> Unit,
     onEntryClick: (TransactionResponse) -> Unit,
@@ -276,8 +277,11 @@ fun TrackerScreen(
         // Only entries in the range on screen are loaded, so this catches the
         // common case early. Entries from other months are still caught by the
         // server, whose refusal appears in the "That didn't work" dialog.
+        // Deleted entries no longer count, so they don't stand in the way.
         val entryCount = state.transactions.count {
-            it.walletId == pendingDelete.id && it.entryType != EntryType.Opening
+            it.walletId == pendingDelete.id &&
+                    it.entryType != EntryType.Opening &&
+                    !it.isDeleted
         }
 
         AlertDialog(
@@ -335,6 +339,17 @@ fun TrackerScreen(
                 TextButton(onClick = onDismissActionError) { Text("OK") }
             },
         )
+
+        if (state.notice != null) {
+            AlertDialog(
+                onDismissRequest = onDismissNotice,
+                title = { Text("Done") },
+                text = { Text(state.notice) },
+                confirmButton = {
+                    TextButton(onClick = onDismissNotice) { Text("OK") }
+                },
+            )
+        }
     }
 }
 
@@ -647,12 +662,18 @@ private fun EntryRow(
         entry.description?.takeIf { it != title },
     ).joinToString(" · ")
 
-    val amount = signedAmount(entry)
+    // A deleted entry stays in the list for the record, greyed out and struck
+    // through, since it no longer counts towards any balance.
+    val titleColor = if (entry.isDeleted) {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    } else {
+        Color.Unspecified
+    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // Tapping an entry opens it for correcting.
+            // Tapping an entry opens its details.
             .clickable(onClick = onClick)
             .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -662,14 +683,21 @@ private fun EntryRow(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge,
+                    color = titleColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     // Shrinks a long title instead of pushing the tag off the row.
                     modifier = Modifier.weight(1f, fill = false),
                 )
-                if (entry.isAdjusted) {
-                    Spacer(Modifier.width(8.dp))
-                    AdjustedTag()
+                when {
+                    entry.isDeleted -> {
+                        Spacer(Modifier.width(8.dp))
+                        DeletedTag()
+                    }
+                    entry.isAdjusted -> {
+                        Spacer(Modifier.width(8.dp))
+                        AdjustedTag()
+                    }
                 }
             }
             if (details.isNotEmpty()) {
@@ -684,14 +712,9 @@ private fun EntryRow(
         }
         Spacer(Modifier.width(12.dp))
         Text(
-            text = if (showCurrency) "${entry.currency} $amount" else amount,
-            style = MaterialTheme.typography.bodyLarge,
-            color = when {
-                entry.entryType == EntryType.Income -> MaterialTheme.colorScheme.primary
-                entry.entryType == EntryType.Opening && isNegative(entry.amount) ->
-                    MaterialTheme.colorScheme.error
-                else -> Color.Unspecified
-            },
+            text = amountText(entry, showCurrency),
+            style = MaterialTheme.typography.bodyLarge.withDeletedStyle(entry),
+            color = amountColor(entry),
         )
     }
 }

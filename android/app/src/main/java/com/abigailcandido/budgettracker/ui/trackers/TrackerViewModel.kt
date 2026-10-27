@@ -9,12 +9,13 @@ import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.TransactionRepository
 import com.abigailcandido.budgettracker.data.WalletRepository
 import com.abigailcandido.budgettracker.data.remote.ApiResult
+import com.abigailcandido.budgettracker.data.remote.CategoryKind
 import com.abigailcandido.budgettracker.data.remote.EntryType
+import com.abigailcandido.budgettracker.data.remote.PromoteOtherResponse
 import com.abigailcandido.budgettracker.data.remote.TrackerSummaryResponse
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
-import com.abigailcandido.budgettracker.data.remote.isAdjusted
 import com.abigailcandido.budgettracker.ui.pin.PIN_LENGTH
 import java.time.LocalDate
 import kotlinx.coroutines.Job
@@ -67,6 +68,8 @@ data class TrackerUiState(
     val createWalletError: String? = null,
     val pendingDeleteWalletId: Int? = null,
     val actionError: String? = null,
+    /** A short message after something worked, such as a new category from Others. */
+    val notice: String? = null,
     /** The details page's entry while that page is open, otherwise null. */
     val entryDetail: EntryDetailState? = null,
     /** The add-or-edit page's form while that page is open, otherwise null. */
@@ -304,32 +307,44 @@ class TrackerViewModel(
         _uiState.update { it.copy(actionError = null) }
     }
 
+    fun onDismissNotice() {
+        _uiState.update { it.copy(notice = null) }
+    }
+
     // ---- The details page, and the PIN check in front of Edit ----
 
     /**
-     * Opens an entry's details. Only a corrected entry has a history worth
-     * fetching; any other entry's history is just itself.
+     * Opens an entry's details. Only a corrected or deleted entry has a
+     * history worth fetching; any other entry's history is just itself.
      */
     fun onEntryClick(entry: TransactionResponse) {
         historyJob?.cancel()
-        _uiState.update { it.copy(entryDetail = EntryDetailState(entry = entry)) }
-        if (entry.isAdjusted) loadEntryHistory()
+        val detail = EntryDetailState(entry = entry)
+        _uiState.update { it.copy(entryDetail = detail) }
+        if (detail.hasHistory) loadEntryHistory()
     }
 
     fun retryEntryHistory() {
         loadEntryHistory()
     }
 
-    /** Back from the details page. Ignored while the PIN is being checked. */
+    /** Back from the details page. Ignored while the PIN is being checked or a move is saving. */
     fun onDismissEntryDetail() {
-        if (_uiState.value.entryDetail?.isCheckingPin == true) return
+        val detail = _uiState.value.entryDetail
+        if (detail?.isCheckingPin == true || detail?.isPromoting == true) return
         historyJob?.cancel()
         _uiState.update { it.copy(entryDetail = null) }
     }
 
-    /** Edit asks for the PIN every time, before the form opens. */
+    /** Edit asks for the PIN every time, before the form opens. A deleted entry has no Edit. */
     fun onEditEntryClick() {
-        updateDetail { it.copy(isPinOpen = true, pin = "", pinError = null) }
+        updateDetail { detail ->
+            if (detail.entry.isDeleted) {
+                detail
+            } else {
+                detail.copy(isPinOpen = true, pin = "", pinError = null)
+            }
+        }
     }
 
     fun onEntryPinChange(value: String) {
@@ -360,6 +375,81 @@ class TrackerViewModel(
                     it.copy(isCheckingPin = false, pin = "", pinError = result.message)
                 }
             }
+        }
+    }
+
+    // ---- Giving an Others entry a category of its own ----
+
+    /** Opens the dialog with the entry's own Others name filled in. */
+    fun onPromoteEntryClick() {
+        updateDetail { detail ->
+            if (!detail.canBePromoted) {
+                detail
+            } else {
+                detail.copy(
+                    isPromoteOpen = true,
+                    promoteName = detail.entry.otherName.orEmpty(),
+                    promotePin = "",
+                    promoteError = null,
+                )
+            }
+        }
+    }
+
+    fun onPromoteNameChange(value: String) {
+        updateDetail { it.copy(promoteName = value.take(OTHER_NAME_MAX_LENGTH), promoteError = null) }
+    }
+
+    fun onPromotePinChange(value: String) {
+        if (!value.all(Char::isDigit)) return
+        updateDetail { it.copy(promotePin = value.take(PIN_LENGTH), promoteError = null) }
+    }
+
+    fun onDismissPromote() {
+        updateDetail { detail ->
+            if (detail.isPromoting) {
+                detail
+            } else {
+                detail.copy(isPromoteOpen = false, promotePin = "", promoteError = null)
+            }
+        }
+    }
+
+    /**
+     * The server finds the category with that name, ignoring capitals, or
+     * makes it, and moves every Others entry with this name into it. Each
+     * move is a correction, so the entry on this page is replaced: the page
+     * closes, and a notice on the tracker screen says what happened.
+     */
+    fun confirmPromote() {
+        val detail = _uiState.value.entryDetail ?: return
+        if (!detail.canConfirmPromote) return
+        val name = detail.promoteName.trim()
+
+        viewModelScope.launch {
+            updateDetail { it.copy(isPromoting = true, promoteError = null) }
+
+            when (val result = transactionRepository.promoteOther(detail.entry.id, name, detail.promotePin)) {
+                is ApiResult.Success -> {
+                    historyJob?.cancel()
+                    _uiState.update {
+                        it.copy(entryDetail = null, notice = promoteNotice(result.data))
+                    }
+                    refresh()
+                }
+                is ApiResult.Failure -> updateDetail {
+                    it.copy(isPromoting = false, promotePin = "", promoteError = result.message)
+                }
+            }
+        }
+    }
+
+    private fun promoteNotice(result: PromoteOtherResponse): String {
+        val entries = if (result.moved == 1) "1 entry" else "${result.moved} entries"
+        return if (result.created) {
+            "${result.categoryName} is now one of your categories. $entries moved into it from Others."
+        } else {
+            "${result.categoryName} was already one of your categories, so $entries moved into it from Others."
         }
     }
 
@@ -416,7 +506,10 @@ class TrackerViewModel(
         loadEntryCategories(keepId = null)
     }
 
-    /** Opens the form filled in with an existing entry, ready to correct. */
+    /**
+     * Opens the form filled in with an existing entry, ready to correct. The
+     * Category and Sub-category fields are filled in once the categories load.
+     */
     private fun openFormFor(entry: TransactionResponse) {
         val type = entry.entryType
 
@@ -427,8 +520,8 @@ class TrackerViewModel(
                     type = type,
                     walletId = entry.walletId,
                     currency = entry.currency,
-                    categoryId = entry.categoryId,
                     originalCategoryId = entry.categoryId,
+                    otherName = entry.otherName.orEmpty(),
                     amount = entry.amount,
                     date = runCatching { LocalDate.parse(entry.transactionDate) }
                         .getOrDefault(LocalDate.now()),
@@ -445,18 +538,21 @@ class TrackerViewModel(
         loadEntryCategories(keepId = _uiState.value.entryForm?.originalCategoryId)
     }
 
+    /** Expense or Income. Only a new entry has the switch; a correction keeps its type. */
     fun onEntryTypeChange(type: EntryType) {
         updateForm { form ->
-            if (form.isOpening || type == EntryType.Opening) {
+            if (!form.isNew || form.isOpening || type == EntryType.Opening) {
                 form
             } else {
                 // An expense category can't come along to an income, or the
                 // other way round, so the choice is cleared when it doesn't fit.
-                val keepsCategory = form.categoriesFor(type).any { it.id == form.topCategoryId }
+                // Others is offered for both, so it stays.
+                val keepsCategory = form.topCategoryId == OTHERS_CHOICE ||
+                        form.categoriesFor(type).any { it.id == form.topCategoryId }
                 form.copy(
                     type = type,
                     topCategoryId = form.topCategoryId.takeIf { keepsCategory },
-                    categoryId = form.categoryId.takeIf { keepsCategory },
+                    subcategoryId = form.subcategoryId.takeIf { keepsCategory },
                     error = null,
                 )
             }
@@ -469,31 +565,51 @@ class TrackerViewModel(
         }
     }
 
-    /** A top-level category from the Category field. */
+    /**
+     * A top-level category, or Others, from the Category field. Choosing a
+     * different one empties the Sub-category field, since its choices change.
+     */
     fun onEntryCategoryChange(topCategoryId: Int) {
         updateForm { form ->
-            val chosen = form.availableCategories.firstOrNull { it.id == topCategoryId }
-            if (chosen == null || chosen.id == form.topCategoryId) {
+            val isKnown = topCategoryId == OTHERS_CHOICE ||
+                    form.availableCategories.any { it.id == topCategoryId }
+            if (!isKnown || topCategoryId == form.topCategoryId) {
                 form
             } else {
-                form.copy(
-                    topCategoryId = chosen.id,
-                    categoryId = when {
-                        // Filed under directly when there is nothing beneath it.
-                        !chosen.hasSubcategories -> chosen.id
-                        // With only one subcategory there is nothing to choose.
-                        chosen.subcategories.size == 1 -> chosen.subcategories.first().id
-                        else -> null
-                    },
-                    error = null,
-                )
+                form.copy(topCategoryId = topCategoryId, subcategoryId = null, error = null)
             }
         }
     }
 
-    /** A subcategory from the Sub-category field. */
+    /** A subcategory, or Others, from the Sub-category field. */
     fun onEntrySubcategoryChange(subcategoryId: Int) {
-        updateForm { it.copy(categoryId = subcategoryId, error = null) }
+        updateForm { it.copy(subcategoryId = subcategoryId, error = null) }
+    }
+
+    /** What an entry under Others was. It is kept if the user switches away and back. */
+    fun onEntryOtherNameChange(value: String) {
+        updateForm { it.copy(otherName = value.take(OTHER_NAME_MAX_LENGTH), error = null) }
+    }
+
+    /**
+     * The name typed under Others is already a category, so the entry is
+     * filed there instead, and the name is no longer needed.
+     */
+    fun onUseCategoryMatch() {
+        updateForm { form ->
+            val match = form.otherNameMatch ?: return@updateForm form
+            form.copy(
+                topCategoryId = match.topCategoryId,
+                subcategoryId = match.subcategoryId,
+                otherName = "",
+                error = null,
+            )
+        }
+    }
+
+    /** Why the entry is being corrected. Optional. */
+    fun onEntryReasonChange(value: String) {
+        updateForm { it.copy(reason = value.take(NOTE_MAX_LENGTH), error = null) }
     }
 
     fun onEntryAmountChange(value: String) {
@@ -521,8 +637,29 @@ class TrackerViewModel(
             updateForm { it.copy(isSaving = true, error = null) }
 
             val editingId = form.editingId
-            val categoryId = form.categoryId
             val date = form.date.toString()
+
+            // Under Others, the Others category itself is fetched first, and
+            // made on the server if this is the first entry to go there.
+            val categoryId: Int? = when {
+                form.isOpening -> null
+                form.isOthersChosen -> {
+                    val kind = if (form.type == EntryType.Income) {
+                        CategoryKind.Income
+                    } else {
+                        CategoryKind.Expense
+                    }
+                    when (val others = categoryRepository.othersCategory(trackerId, kind, form.othersParentId)) {
+                        is ApiResult.Success -> others.data.id
+                        is ApiResult.Failure -> {
+                            updateForm { it.copy(isSaving = false, error = others.message) }
+                            return@launch
+                        }
+                    }
+                }
+                else -> form.leafCategoryId
+            }
+            val otherName = if (form.isOthersChosen) form.otherName.trim() else null
 
             val result = when {
                 // An opening balance keeps its wallet and has no type or category,
@@ -535,6 +672,7 @@ class TrackerViewModel(
                     amount = form.amount,
                     date = date,
                     description = form.note,
+                    reason = form.reason,
                 )
 
                 editingId != null -> transactionRepository.update(
@@ -545,6 +683,8 @@ class TrackerViewModel(
                     amount = form.amount,
                     date = date,
                     description = form.note,
+                    otherName = otherName,
+                    reason = form.reason,
                 )
 
                 categoryId != null -> transactionRepository.create(
@@ -554,6 +694,7 @@ class TrackerViewModel(
                     categoryId = categoryId,
                     date = date,
                     description = form.note,
+                    otherName = otherName,
                 )
 
                 // canSave already guarantees a category, so this never happens.
@@ -569,24 +710,54 @@ class TrackerViewModel(
         }
     }
 
+    // ---- Deleting, with a reason and the PIN again ----
+
     fun onDeleteEntryClick() {
-        updateForm { it.copy(isConfirmingDelete = true) }
+        updateForm {
+            it.copy(
+                isConfirmingDelete = true,
+                deleteReason = "",
+                deletePin = "",
+                deleteError = null,
+            )
+        }
+    }
+
+    fun onDeleteReasonChange(value: String) {
+        updateForm { it.copy(deleteReason = value.take(NOTE_MAX_LENGTH), deleteError = null) }
+    }
+
+    fun onDeletePinChange(value: String) {
+        if (!value.all(Char::isDigit)) return
+        updateForm { it.copy(deletePin = value.take(PIN_LENGTH), deleteError = null) }
     }
 
     fun onDismissDeleteEntry() {
-        updateForm { it.copy(isConfirmingDelete = false) }
+        updateForm { form ->
+            if (form.isDeleting) {
+                form
+            } else {
+                form.copy(isConfirmingDelete = false, deletePin = "", deleteError = null)
+            }
+        }
     }
 
+    /**
+     * The server checks the PIN. A wrong one, or any other refusal, keeps the
+     * dialog open with the reason still filled in, so only the PIN is retyped.
+     */
     fun confirmDeleteEntry() {
-        val editingId = _uiState.value.entryForm?.editingId ?: return
+        val form = _uiState.value.entryForm ?: return
+        val editingId = form.editingId ?: return
+        if (!form.canConfirmDelete) return
 
         viewModelScope.launch {
-            updateForm { it.copy(isConfirmingDelete = false, isDeleting = true, error = null) }
+            updateForm { it.copy(isDeleting = true, deleteError = null) }
 
-            when (val result = transactionRepository.delete(editingId)) {
+            when (val result = transactionRepository.delete(editingId, form.deleteReason, form.deletePin)) {
                 is ApiResult.Success -> closeEntryFormAndRefresh()
                 is ApiResult.Failure -> updateForm {
-                    it.copy(isDeleting = false, error = result.message)
+                    it.copy(isDeleting = false, deletePin = "", deleteError = result.message)
                 }
             }
         }
@@ -611,13 +782,18 @@ class TrackerViewModel(
         categoryJob = viewModelScope.launch {
             when (val result = categoryRepository.listForTracker(trackerId)) {
                 is ApiResult.Success -> updateForm { form ->
-                    val options = categoryOptions(result.data, keepId)
+                    // When correcting, the two fields start on the entry's own
+                    // category: itself, its parent and itself, or Others.
+                    val (topId, subId) = if (form.topCategoryId == null && keepId != null) {
+                        choiceFor(keepId, result.data)
+                    } else {
+                        form.topCategoryId to form.subcategoryId
+                    }
                     form.copy(
                         isLoadingCategories = false,
-                        categories = options,
-                        // When correcting, the Category field starts on the
-                        // entry's own category, or on its subcategory's parent.
-                        topCategoryId = form.topCategoryId ?: options.topCategoryFor(form.categoryId),
+                        categories = categoryOptions(result.data, keepId),
+                        topCategoryId = topId,
+                        subcategoryId = subId,
                     )
                 }
                 is ApiResult.Failure -> updateForm {

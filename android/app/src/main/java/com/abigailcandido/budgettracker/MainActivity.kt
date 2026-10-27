@@ -339,6 +339,7 @@ private fun SignedInNavHost(
                 onConfirmDeleteWallet = trackerViewModel::confirmDeleteWallet,
                 onDismissDeleteWallet = trackerViewModel::onDismissDeleteWallet,
                 onDismissActionError = trackerViewModel::onDismissActionError,
+                onDismissNotice = trackerViewModel::onDismissNotice,
                 onRetry = trackerViewModel::retry,
                 onAddEntryClick = {
                     trackerViewModel.onAddEntryClick()
@@ -390,6 +391,11 @@ private fun SignedInNavHost(
                     onConfirmPin = trackerViewModel::confirmEntryPin,
                     onDismissPin = trackerViewModel::onDismissEntryPin,
                     onRetryHistory = trackerViewModel::retryEntryHistory,
+                    onPromoteClick = trackerViewModel::onPromoteEntryClick,
+                    onPromoteNameChange = trackerViewModel::onPromoteNameChange,
+                    onPromotePinChange = trackerViewModel::onPromotePinChange,
+                    onConfirmPromote = trackerViewModel::confirmPromote,
+                    onDismissPromote = trackerViewModel::onDismissPromote,
                 )
             }
         }
@@ -429,12 +435,17 @@ private fun SignedInNavHost(
                     onWalletChange = trackerViewModel::onEntryWalletChange,
                     onCategoryChange = trackerViewModel::onEntryCategoryChange,
                     onSubcategoryChange = trackerViewModel::onEntrySubcategoryChange,
+                    onOtherNameChange = trackerViewModel::onEntryOtherNameChange,
+                    onUseCategoryMatch = trackerViewModel::onUseCategoryMatch,
                     onAmountChange = trackerViewModel::onEntryAmountChange,
                     onDateChange = trackerViewModel::onEntryDateChange,
                     onNoteChange = trackerViewModel::onEntryNoteChange,
+                    onReasonChange = trackerViewModel::onEntryReasonChange,
                     onRetryCategories = trackerViewModel::retryEntryCategories,
                     onSave = trackerViewModel::saveEntry,
                     onDeleteClick = trackerViewModel::onDeleteEntryClick,
+                    onDeleteReasonChange = trackerViewModel::onDeleteReasonChange,
+                    onDeletePinChange = trackerViewModel::onDeletePinChange,
                     onConfirmDelete = trackerViewModel::confirmDeleteEntry,
                     onDismissDelete = trackerViewModel::onDismissDeleteEntry,
                     onCancel = trackerViewModel::onDismissEntryForm,
