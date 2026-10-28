@@ -4,8 +4,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.models import OTHERS_CATEGORY_NAME
+
 BCRYPT_MAX_PASSWORD_BYTES = 72
 PIN_PATTERN = r"^\d{6}$"
+EMAIL_CODE_PATTERN = r"^\d{6}$"
 CURRENCY_PATTERN = r"^[A-Za-z]{3}$"
 MONEY_DECIMAL_PLACES = 2
 # Matches the transactions table's amount column: up to 9,999,999,999.99.
@@ -376,10 +379,10 @@ class TransactionUpdateRequest(BaseModel):
 
 
 class TransactionDeleteRequest(BaseModel):
-    """A deletion needs a reason, and the PIN again, before anything happens."""
+    """A deletion needs a reason, and the code just emailed for it."""
 
     reason: str = Field(min_length=1, max_length=255)
-    pin: str = Field(pattern=PIN_PATTERN)
+    code: str = Field(pattern=EMAIL_CODE_PATTERN)
 
     @field_validator("reason")
     @classmethod
@@ -388,6 +391,28 @@ class TransactionDeleteRequest(BaseModel):
         if not cleaned:
             raise ValueError("Say why the entry is being deleted")
         return cleaned
+
+
+class EmailCodeResponse(BaseModel):
+    # Masked, such as "ab•••@gmail.com", so the screen can say where to look.
+    sent_to: str
+    expires_in_minutes: int
+    # Only for the reserved test domains, which can never receive email. It
+    # lets the smoke test finish a deletion; a real address never gets this.
+    test_code: str | None = None
+
+
+class TransactionRestoreRequest(BaseModel):
+    reason: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional: why the entry is being restored. Kept in its history.",
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def tidy_reason(cls, value: str | None) -> str | None:
+        return _clean_description(value)
 
 
 class OthersCategoryRequest(BaseModel):
@@ -400,22 +425,78 @@ class OthersCategoryRequest(BaseModel):
     parent_id: int | None = Field(default=None, ge=1)
 
 
+def _clean_entry_category_name(value: str | None) -> str | None:
+    """A name typed for a category made from an entry. Others is never one."""
+    cleaned = _clean_description(value)
+    if cleaned is not None and cleaned.lower() == OTHERS_CATEGORY_NAME.lower():
+        raise ValueError("Choose a name other than Others")
+    return cleaned
+
+
+class CategoryFindOrCreateRequest(BaseModel):
+    """A category typed in while filing an entry, found or made by name.
+
+    Names are matched ignoring capitals, so "pet food" finds "Pet Food"
+    instead of making a second one.
+    """
+
+    kind: CategoryKind = Field(
+        default="expense",
+        description="Used at the top level. Under a parent, the parent's kind wins.",
+    )
+    parent_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="Set to make the name a sub-category of this category.",
+    )
+    name: str = Field(min_length=1, max_length=100)
+    subcategory_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description=(
+            "Only at the top level: a sub-category to make under the new "
+            "category, which the entry is then filed under."
+        ),
+    )
+
+    @field_validator("name")
+    @classmethod
+    def require_name(cls, value: str) -> str:
+        cleaned = _clean_entry_category_name(value)
+        if cleaned is None:
+            raise ValueError("Give the category a name")
+        return cleaned
+
+    @field_validator("subcategory_name")
+    @classmethod
+    def tidy_subcategory_name(cls, value: str | None) -> str | None:
+        return _clean_entry_category_name(value)
+
+
 class PromoteOtherRequest(BaseModel):
     name: str | None = Field(
         default=None,
         max_length=100,
         description="The new category's name. Leave it out to use the entry's own Others name.",
     )
-    pin: str = Field(pattern=PIN_PATTERN)
+    subcategory_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description=(
+            "Only for an entry under the top-level Others: a sub-category to make "
+            "under the new category, which the entries then move into."
+        ),
+    )
 
-    @field_validator("name")
+    @field_validator("name", "subcategory_name")
     @classmethod
     def tidy_name(cls, value: str | None) -> str | None:
-        return _clean_description(value)
+        return _clean_entry_category_name(value)
 
 
 class PromoteOtherResponse(BaseModel):
     category_id: int
+    # The full name, such as "Pets › Food" when a sub-category was made.
     category_name: str
     # False when a category of that name already existed and was used instead.
     created: bool
@@ -444,13 +525,17 @@ class TransactionResponse(BaseModel):
     replaces_id: int | None = None
     reverses_id: int | None = None
     is_reversed: bool = False
-        # Deleted: reversed with nothing replacing it. A deleted entry stays in the
+    # Deleted: reversed with nothing replacing it. A deleted entry stays in the
     # lists, but counts towards nothing.
     is_deleted: bool = False
+    # The copy that brought a deleted entry back. Like a correction, it names
+    # the version it replaced.
+    is_restoration: bool = False
     other_name: str | None = None
-    # On a reversal: why the entry was corrected or deleted.
+    # On a reversal: why the entry was corrected or deleted. On a restored
+    # entry: why it was restored.
     reason: str | None = None
-
+    
 class WalletSummaryResponse(BaseModel):
     """One wallet's movement over a date range.
 

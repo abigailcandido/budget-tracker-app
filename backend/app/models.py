@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
-    ForeignKey, String, Numeric, Boolean, DateTime, Date, Text, UniqueConstraint
+    ForeignKey, String, Numeric, Boolean, DateTime, Date, Text, UniqueConstraint, false
 )
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -167,7 +167,11 @@ class Transaction(Base):
     # food", until it is given a category of its own. Empty everywhere else.
     other_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     # On a reversal: why the entry was corrected or deleted, in the user's words.
+    # On a restored entry: why it was restored, if a reason was given.
     reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # On the copy that brought a deleted entry back. It replaces the deleted
+    # version the same way a correction does, so this is what tells the two apart.
+    is_restoration: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class BudgetLimit(Base):
@@ -204,6 +208,28 @@ class AuthToken(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     purpose: Mapped[str] = mapped_column(String(30))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    
+
+class EmailCode(Base):
+    """A short code sent by email to confirm one action, such as a deletion.
+
+    Each code belongs to one action on one record, works once, expires after a
+    few minutes and allows only a few wrong tries. Only a bcrypt hash of it is
+    stored, the same way PINs are, so reading this table reveals no codes.
+    """
+
+    __tablename__ = "email_codes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    purpose: Mapped[str] = mapped_column(String(30))
+    # The record the code is for, such as the transaction it deletes.
+    target_id: Mapped[Optional[int]] = mapped_column(nullable=True)
+    code_hash: Mapped[str] = mapped_column(String(255))
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

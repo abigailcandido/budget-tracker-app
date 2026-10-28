@@ -24,6 +24,11 @@ UNDELIVERABLE_DOMAINS = ("example.com", "example.org", "example.net")
 logger = logging.getLogger("uvicorn.error")
 
 
+def is_undeliverable(address: str) -> bool:
+    """Whether an address is at one of the reserved test domains."""
+    return address.rsplit("@", 1)[-1].lower() in UNDELIVERABLE_DOMAINS
+
+
 def send_email(to: str, subject: str, text: str) -> None:
     """Send a plain-text email, or print it to the log when sending is off.
 
@@ -33,9 +38,8 @@ def send_email(to: str, subject: str, text: str) -> None:
     by the time this runs there is nobody left to report them to.
     """
     api_key = os.getenv("RESEND_API_KEY")
-    domain = to.rsplit("@", 1)[-1].lower()
 
-    if not api_key or domain in UNDELIVERABLE_DOMAINS:
+    if not api_key or is_undeliverable(to):
         logger.info("Email not sent (no RESEND_API_KEY, or a test address).")
         logger.info("To: %s | Subject: %s\n%s", to, subject, text)
         return

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.category_lookup import find_or_create_leaf
+from app.category_lookup import find_or_create_leaf, find_or_create_path
 from app.deps import get_current_user, get_db
 from app.models import (
     CATEGORY_EXPENSE,
@@ -18,6 +18,7 @@ from app.models import (
 from app.ownership import get_owned_category, get_owned_tracker
 from app.schemas import (
     CategoryCreateRequest,
+    CategoryFindOrCreateRequest,
     CategoryKind,
     CategoryResponse,
     CategoryUpdateRequest,
@@ -641,6 +642,63 @@ def others_category(
         kind=others.kind,
         parent_id=others.parent_id,
         is_global=others.main_tracker_id is None,
+        is_enabled=True,
+        has_children=False,
+    )
+
+@router.post(
+    "/trackers/{tracker_id}/categories/find-or-create",
+    response_model=TrackerCategoryResponse,
+    summary="The category to file an entry under, made if it does not exist yet",
+)
+def find_or_create_category(
+    tracker_id: int,
+    payload: CategoryFindOrCreateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TrackerCategoryResponse:
+    """For a category typed in while adding an entry, instead of filing it
+    under Others. Asking for a name that already exists, in any capitals,
+    returns that category instead of making a second one, switched on in this
+    tracker.
+
+    At the top level the name can be given a sub-category, as in "Pets › Food";
+    the sub-category is what comes back. With parent_id, the name becomes one
+    of that category's sub-categories.
+    """
+    tracker = get_owned_tracker(tracker_id, user, db)
+
+    parent: Category | None = None
+    if payload.parent_id is not None:
+        parent = get_owned_category(payload.parent_id, user, db)
+        _reject_wrong_scope(parent, tracker)
+
+        if parent.parent_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A sub-category cannot have sub-categories of its own",
+            )
+        # A first sub-category would move everything filed directly under the
+        # parent, which belongs on the Categories screen, not in the middle of
+        # adding an entry.
+        if not _child_ids(parent.id, user, db):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This category has no sub-categories. Add its first one from Categories",
+            )
+
+    category, _ = find_or_create_path(
+        payload.name, payload.kind, parent, payload.subcategory_name, tracker, user, db
+    )
+    db.commit()
+    db.refresh(category)
+
+    return TrackerCategoryResponse(
+        id=category.id,
+        name=category.name,
+        kind=category.kind,
+        parent_id=category.parent_id,
+        is_global=category.main_tracker_id is None,
         is_enabled=True,
         has_children=False,
     )

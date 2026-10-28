@@ -120,3 +120,75 @@ def find_or_create_leaf(
 
     switch_on(category, tracker, db)
     return category, created
+
+
+def find_or_create_path(
+    name: str,
+    kind: str,
+    parent: Category | None,
+    subcategory_name: str | None,
+    tracker: MainTracker,
+    user: User,
+    db: Session,
+) -> tuple[Category, bool]:
+    """The category to file an entry under, given by name, made if need be.
+
+    Without a sub-category this is find_or_create_leaf. With one, the name is
+    a top-level category holding that sub-category, as in "Pets › Food": both
+    are found or made, and the sub-category is what comes back.
+
+    An existing top-level category with no sub-categories of its own is
+    refused here. Giving it one would move everything already filed under it,
+    which belongs on the Categories screen, where the user can see it happen.
+
+    Returns the category, and whether anything was created just now.
+    """
+    if subcategory_name is None:
+        return find_or_create_leaf(name, kind, parent, tracker, user, db)
+
+    if parent is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A sub-category cannot have sub-categories of its own",
+        )
+
+    clean_name = name.strip()
+    top = (
+        db.query(Category)
+        .filter(
+            Category.user_id == user.id,
+            func.lower(Category.name) == clean_name.lower(),
+            Category.parent_id.is_(None),
+            Category.kind == kind,
+            or_(
+                Category.main_tracker_id.is_(None),
+                Category.main_tracker_id == tracker.id,
+            ),
+        )
+        .first()
+    )
+    top_created = top is None
+
+    if top is None:
+        # Shared with every tracker, like any category made from an entry, but
+        # switched on only in this one.
+        top = Category(user_id=user.id, name=clean_name, kind=kind)
+        db.add(top)
+        db.flush()
+        db.add(TrackerCategory(category_id=top.id, main_tracker_id=tracker.id))
+        db.flush()
+    else:
+        has_children = (
+            db.query(Category.id).filter(Category.parent_id == top.id).first() is not None
+        )
+        if not has_children:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"{top.name} is already a category without sub-categories. Choose "
+                    "it instead, or give it sub-categories from Categories"
+                ),
+            )
+
+    leaf, leaf_created = find_or_create_leaf(subcategory_name, kind, top, tracker, user, db)
+    return leaf, top_created or leaf_created

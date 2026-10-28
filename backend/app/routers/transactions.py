@@ -16,12 +16,21 @@ as deleted, and a reversal records why it was made.
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session, aliased
 
-from app.category_lookup import find_or_create_leaf, is_others
+from app.category_lookup import find_or_create_path, is_others
 from app.deps import get_current_user, get_db
+from app.email_codes import (
+    CODE_LIFETIME,
+    DELETE_TRANSACTION,
+    issue_code,
+    masked_email,
+    refuse_if_too_soon,
+    use_code,
+)
+from app.mailer import is_undeliverable, send_email
 from app.models import (
     OTHERS_CATEGORY_NAME,
     TRANSACTION_EXPENSE,
@@ -41,17 +50,18 @@ from app.ownership import (
 )
 from app.schemas import (
     CurrencyTotalResponse,
+    EmailCodeResponse,
     PromoteOtherRequest,
     PromoteOtherResponse,
     TrackerSummaryResponse,
     TransactionCreateRequest,
     TransactionDeleteRequest,
     TransactionResponse,
+    TransactionRestoreRequest,
     TransactionUpdateRequest,
     WalletSummaryResponse,
     format_money,
 )
-from app.security import verify_password
 
 router = APIRouter(tags=["transactions"])
 
@@ -216,20 +226,6 @@ def _reverse(
     return reversal
 
 
-def _require_pin(user: User, pin: str) -> None:
-    """Deleting an entry, or moving entries out of Others, asks for the PIN again."""
-    if user.hashed_pin is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="No PIN has been set for this account",
-        )
-    if not verify_password(pin, user.hashed_pin):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Incorrect PIN",
-        )
-
-
 def _other_name_for(category: Category | None, other_name: str | None) -> str | None:
     """An entry under Others needs a name for what it was; no other entry has one.
 
@@ -295,6 +291,7 @@ def _to_response(
         reverses_id=transaction.reverses_id,
         is_reversed=reversal_id is not None,
         is_deleted=reversal_id is not None and correction_id is None,
+        is_restoration=transaction.is_restoration,
         other_name=transaction.other_name,
         reason=transaction.reason,
     )
@@ -731,14 +728,82 @@ def update_transaction(
     return _load_response(correction.id, db)
 
 
+def _entry_summary(entry: TransactionResponse) -> str:
+    """One line naming an entry, for the email that confirms deleting it."""
+    if entry.type == TRANSACTION_OPENING:
+        what = "Opening balance"
+    else:
+        category = entry.category_name or "No category"
+        if entry.parent_category_name:
+            category = f"{entry.parent_category_name} › {category}"
+        if entry.other_name:
+            category = f"{category}: {entry.other_name}"
+        what = f"{entry.type.capitalize()} · {category}"
+
+    day = entry.transaction_date
+    return f"{what} · {entry.currency} {entry.amount} · {day.day} {day:%b %Y} · {entry.wallet_name}"
+
+
+def _delete_code_email(code: str, summary: str, minutes: int) -> str:
+    return (
+        f"Your code is {code}\n\n"
+        "Enter it in Budget Tracker to delete this transaction:\n"
+        f"{summary}\n\n"
+        f"The code works once, only for this transaction, and stops working "
+        f"in {minutes} minutes.\n\n"
+        "If you didn't ask to delete anything, someone may be using your phone. "
+        "Change your password and your PIN.\n"
+    )
+
+
+@router.post(
+    "/transactions/{transaction_id}/delete-code",
+    response_model=EmailCodeResponse,
+    summary="Email a code for deleting a transaction",
+    description=(
+        "Sends a six-digit code to the account's email address. Deleting the "
+        "entry needs it. The code works once, only for this entry, and expires "
+        "after ten minutes. Asking again sends a new code and cancels the old one."
+    ),
+)
+def send_delete_code(
+    transaction_id: int,
+    background: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailCodeResponse:
+    transaction = get_owned_transaction(transaction_id, user, db)
+    _require_current(transaction, db)
+    refuse_if_too_soon(db, user, DELETE_TRANSACTION, transaction.id)
+
+    summary = _entry_summary(_load_response(transaction.id, db))
+    code = issue_code(db, user, DELETE_TRANSACTION, transaction.id)
+    minutes = int(CODE_LIFETIME.total_seconds() // 60)
+
+    # Sent after the response has gone, so a slow email service never holds
+    # up the phone.
+    background.add_task(
+        send_email,
+        user.email,
+        f"Your Budget Tracker code: {code}",
+        _delete_code_email(code, summary, minutes),
+    )
+
+    return EmailCodeResponse(
+        sent_to=masked_email(user.email),
+        expires_in_minutes=minutes,
+        test_code=code if is_undeliverable(user.email) else None,
+    )
+
+
 @router.delete(
     "/transactions/{transaction_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a transaction",
     description=(
-        "Needs a reason and the PIN. The entry is kept: a reversal that "
-        "cancels it is added, carrying the reason, and the entry stays in the "
-        "tracker's list marked as deleted."
+        "Needs a reason and the code emailed by the delete-code endpoint. The "
+        "entry is kept: a reversal that cancels it is added, carrying the "
+        "reason, and the entry stays in the tracker's list marked as deleted."
     ),
 )
 def delete_transaction(
@@ -749,7 +814,7 @@ def delete_transaction(
 ) -> None:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
     _require_current(transaction, db)
-    _require_pin(user, payload.pin)
+    use_code(db, user, DELETE_TRANSACTION, transaction.id, payload.code)
 
     wallets = _lock_wallets({transaction.wallet_id}, db)
     db.add(_reverse(transaction, wallets, payload.reason))
@@ -757,14 +822,83 @@ def delete_transaction(
 
 
 @router.post(
+    "/transactions/{transaction_id}/restore",
+    response_model=TransactionResponse,
+    summary="Restore a deleted transaction",
+    description=(
+        "The deleted entry and its deletion both stay in the history. A copy of "
+        "the entry is added in place of the deleted version, so it counts "
+        "towards its wallet again. The restored entry is returned. Its id is new."
+    ),
+)
+def restore_transaction(
+    transaction_id: int,
+    payload: TransactionRestoreRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TransactionResponse:
+    transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
+
+    if transaction.reverses_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A reversal is part of an entry's history and cannot be restored",
+        )
+
+    is_reversed = (
+        db.query(Transaction.id).filter(Transaction.reverses_id == transaction.id).first()
+        is not None
+    )
+    is_replaced = (
+        db.query(Transaction.id).filter(Transaction.replaces_id == transaction.id).first()
+        is not None
+    )
+    if not is_reversed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a deleted entry can be restored",
+        )
+    if is_replaced:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This entry was corrected or restored already. Open its latest version instead",
+        )
+
+    wallets = _lock_wallets({transaction.wallet_id}, db)
+    restored = Transaction(
+        user_id=transaction.user_id,
+        wallet_id=transaction.wallet_id,
+        category_id=transaction.category_id,
+        recurring_rule_id=transaction.recurring_rule_id,
+        source_main_tracker_id=transaction.source_main_tracker_id,
+        amount=transaction.amount,
+        type=transaction.type,
+        description=transaction.description,
+        transaction_date=transaction.transaction_date,
+        replaces_id=transaction.id,
+        origin_id=transaction.origin_id or transaction.id,
+        other_name=transaction.other_name,
+        reason=payload.reason,
+        is_restoration=True,
+    )
+    wallets[transaction.wallet_id].balance += _effect(transaction.type, transaction.amount)
+
+    db.add(restored)
+    db.commit()
+
+    return _load_response(restored.id, db)
+
+
+@router.post(
     "/transactions/{transaction_id}/promote-other",
     response_model=PromoteOtherResponse,
     summary="Give an Others entry a category of its own",
     description=(
-        "Needs the PIN. Finds the category with that name at the same level, "
-        "ignoring capitals, or creates it, then moves every current entry in "
-        "the tracker filed under the same Others with the same name into it. "
-        "Each move is recorded as an adjustment."
+        "Finds the category with that name at the same level, ignoring "
+        "capitals, or creates it. Under the top-level Others it can be given a "
+        "sub-category too. Every current entry in the tracker filed under the "
+        "same Others with the same name then moves into it, and each move is "
+        "recorded as an adjustment."
     ),
 )
 def promote_other(
@@ -787,22 +921,20 @@ def promote_other(
             detail="Only an entry under Others can be given a category this way",
         )
 
-    _require_pin(user, payload.pin)
-
     name = payload.name or transaction.other_name
-    if name.strip().lower() == OTHERS_CATEGORY_NAME.lower():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Choose a name other than Others",
-        )
 
     wallet = get_owned_wallet(transaction.wallet_id, user, db)
     tracker = get_owned_tracker(wallet.main_tracker_id, user, db)
     parent = db.get(Category, others.parent_id) if others.parent_id is not None else None
 
-    # Under Others at the top level, the new category is top-level too; under
-    # "Bills › Others", it becomes another of Bills' subcategories.
-    target, created = find_or_create_leaf(name, others.kind, parent, tracker, user, db)
+    # Under Others at the top level, the new category is top-level too, with
+    # its own sub-category if one was asked for; under "Bills › Others", it
+    # becomes another of Bills' subcategories.
+    target, created = find_or_create_path(
+        name, others.kind, parent, payload.subcategory_name, tracker, user, db
+    )
+    target_parent = db.get(Category, target.parent_id) if target.parent_id is not None else None
+    label = f"{target_parent.name} › {target.name}" if target_parent is not None else target.name
 
     match_name = transaction.other_name.strip().lower()
     candidate_ids = [
@@ -828,7 +960,7 @@ def promote_other(
     )
     wallets = _lock_wallets({entry.wallet_id for entry in entries}, db)
 
-    reason = f"Moved from Others to {target.name}"
+    reason = f"Moved from Others to {label}"
     moved = 0
     for entry in entries:
         # Checked again under the lock, in case a correction saved a moment
@@ -863,7 +995,7 @@ def promote_other(
 
     return PromoteOtherResponse(
         category_id=target.id,
-        category_name=target.name,
+        category_name=label,
         created=created,
         moved=moved,
     )

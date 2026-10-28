@@ -18,7 +18,7 @@ from datetime import date, timedelta
 import urllib.error
 import urllib.request
 
-# The first test account's PIN, which deleting an entry asks for.
+# The first test account's PIN.
 PIN = "135790"
 
 BASE_URL = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000").rstrip("/")
@@ -505,6 +505,17 @@ def main() -> None:
     def id_of(row):
         return (row or {}).get("id")
     
+    def delete_entry(transaction_id, reason="Bought by mistake"):
+        """Ask for a deletion code, then delete with it. Returns the status."""
+        _, sent = call("POST", f"/transactions/{transaction_id}/delete-code", token_a)
+        status, _ = call(
+            "DELETE",
+            f"/transactions/{transaction_id}",
+            token_a,
+            {"reason": reason, "code": (sent or {}).get("test_code")},
+        )
+        return status
+    
     today = date.today()
 
     status, rows = call("GET", f"/trackers/{one}/transactions", token_a)
@@ -681,19 +692,45 @@ def main() -> None:
     status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={bank['id']}", token_a)
     check("list one wallet's transactions", [row["amount"] for row in rows or []], ["200.00", "30000.00"])
 
-    deletion = {"reason": "Bought by mistake", "pin": PIN}
+    # Deleting needs a code sent to the account's email. The smoke test's
+    # addresses can never receive email, so for them alone the code comes back
+    # in the response.
+    status, sent = call("POST", f"/transactions/{id_of(groceries_v3)}/delete-code", token_a)
+    check("ask for a code to delete a transaction", status, 200)
+    check(
+        "it says where the code went, without the whole address",
+        (sent or {}).get("sent_to"),
+        "sm•••@example.com",
+    )
+    check("and how long it lasts", (sent or {}).get("expires_in_minutes"), 10)
+    code = (sent or {}).get("test_code") or ""
+    check("a test address gets the code back", (len(code), code.isdigit()), (6, True))
+
+    status, _ = call("POST", f"/transactions/{id_of(groceries_v3)}/delete-code", token_a)
+    check("asking again straight away is refused", status, 429)
+
+    deletion = {"reason": "Bought by mistake", "code": code}
+    wrong_code = "000000" if code != "000000" else "111111"
+
     status, _ = call("DELETE", f"/transactions/{id_of(groceries_v3)}", token_a)
-    check("deleting needs a reason and the PIN", status, 422)
+    check("deleting needs a reason and the code", status, 422)
 
     status, _ = call(
         "DELETE", f"/transactions/{id_of(groceries_v3)}", token_a, {**deletion, "reason": "   "}
     )
     check("a blank reason is refused", status, 422)
 
-    status, _ = call(
-        "DELETE", f"/transactions/{id_of(groceries_v3)}", token_a, {**deletion, "pin": "000000"}
+    status, body = call(
+        "DELETE", f"/transactions/{id_of(groceries_v3)}", token_a, {**deletion, "code": wrong_code}
     )
-    check("a wrong PIN is refused", status, 403)
+    check(
+        "a wrong code is refused, saying how many tries are left",
+        (status, (body or {}).get("detail")),
+        (403, "Incorrect code. 4 tries left"),
+    )
+
+    status, _ = call("DELETE", f"/transactions/{pay['id']}", token_a, deletion)
+    check("a code only works for the entry it was sent for", status, 403)
 
     status, _ = call("DELETE", f"/transactions/{id_of(groceries_v3)}", token_a, deletion)
     check("delete a transaction", status, 204)
@@ -779,6 +816,56 @@ def main() -> None:
         6 + 3 + 4,
     )
 
+    print("\nRestoring")
+
+    status, _ = call("POST", f"/transactions/{pay['id']}/restore", token_a, {})
+    check("only a deleted entry can be restored", status, 409)
+
+    status, _ = call("POST", f"/transactions/{reversal_id}/restore", token_a, {})
+    check("a reversal cannot be restored", status, 409)
+
+    status, restored = call(
+        "POST",
+        f"/transactions/{id_of(groceries_v3)}/restore",
+        token_a,
+        {"reason": "  Bought after all  "},
+    )
+    check("restore a deleted transaction", status, 200)
+    check(
+        "it comes back as a new entry, in place of the deleted one",
+        (
+            id_of(restored) not in (None, id_of(groceries_v3)),
+            (restored or {}).get("replaces_id"),
+            (restored or {}).get("is_restoration"),
+        ),
+        (True, id_of(groceries_v3), True),
+    )
+    check("the reason for restoring is kept with it", (restored or {}).get("reason"), "Bought after all")
+    check("its amount leaves the wallet again", balance_of(wallet["id"]), "700.00")
+
+    status, rows = call("GET", f"/trackers/{one}/transactions?wallet_id={wallet['id']}", token_a)
+    check(
+        "the restored entry is listed instead of the deleted one",
+        [(row["id"], row["is_deleted"]) for row in rows or [] if row["type"] == "expense"],
+        [(id_of(restored), False)],
+    )
+
+    status, _ = call("POST", f"/transactions/{id_of(groceries_v3)}/restore", token_a, {})
+    check("a deleted entry can only be restored once", status, 409)
+
+    status, history = call("GET", f"/transactions/{id_of(restored)}/history", token_a)
+    check(
+        "the deletion and the restoration both stay in the history",
+        [
+            (row["amount"], row["reverses_id"] is not None, row["is_restoration"])
+            for row in (history or [])[-3:]
+        ],
+        [("300.00", False, False), ("-300.00", True, False), ("300.00", False, True)],
+    )
+
+    check("a restored entry can be deleted again", delete_entry(id_of(restored), "Returned it"), 204)
+    check("and its amount returns to the wallet", balance_of(wallet["id"]), "1000.00")
+
     status, spare = call(
         "POST",
         f"/trackers/{one}/wallets",
@@ -791,7 +878,38 @@ def main() -> None:
         token_a,
         {**expense, "wallet_id": id_of(spare), "amount": "5.00"},
     )
-    call("DELETE", f"/transactions/{id_of(mistake)}", token_a, deletion)
+
+    _, sent = call("POST", f"/transactions/{id_of(mistake)}/delete-code", token_a)
+    spare_code = (sent or {}).get("test_code") or ""
+    spare_wrong = "000000" if spare_code != "000000" else "111111"
+    for _ in range(4):
+        call(
+            "DELETE",
+            f"/transactions/{id_of(mistake)}",
+            token_a,
+            {"reason": "Test", "code": spare_wrong},
+        )
+    status, body = call(
+        "DELETE", f"/transactions/{id_of(mistake)}", token_a, {"reason": "Test", "code": spare_wrong}
+    )
+    check(
+        "the fifth wrong code uses the code up",
+        (status, (body or {}).get("detail")),
+        (403, "Incorrect code. Send a new one"),
+    )
+    status, body = call(
+        "DELETE", f"/transactions/{id_of(mistake)}", token_a, {"reason": "Test", "code": spare_code}
+    )
+    check(
+        "after five wrong tries even the right code is refused",
+        (status, (body or {}).get("detail")),
+        (403, "Too many wrong tries. Send a new code"),
+    )
+    check(
+        "a used-up code can be replaced straight away",
+        delete_entry(id_of(mistake)),
+        204,
+    )
     status, _ = call("DELETE", f"/wallets/{id_of(spare)}", token_a)
     check("a wallet whose entries were all deleted can be deleted", status, 204)
 
@@ -953,13 +1071,8 @@ def main() -> None:
     status, pet_two = call("POST", "/transactions", token_a, {**pet, "other_name": "  pet FOOD "})
     status, toys = call("POST", "/transactions", token_a, {**pet, "other_name": "Toys"})
 
-    status, _ = call(
-        "POST", f"/transactions/{id_of(pet_one)}/promote-other", token_a, {"pin": "000000"}
-    )
-    check("giving it a category needs the right PIN", status, 403)
-
     status, promoted = call(
-        "POST", f"/transactions/{id_of(pet_one)}/promote-other", token_a, {"pin": PIN}
+        "POST", f"/transactions/{id_of(pet_one)}/promote-other", token_a, {}
     )
     check(
         "give an Others entry a category of its own",
@@ -991,7 +1104,7 @@ def main() -> None:
     )
 
     status, _ = call(
-        "POST", f"/transactions/{id_of(pet_one)}/promote-other", token_a, {"pin": PIN}
+        "POST", f"/transactions/{id_of(pet_one)}/promote-other", token_a, {}
     )
     check("an entry that has been moved cannot be moved again", status, 409)
 
@@ -999,7 +1112,7 @@ def main() -> None:
         "POST", "/transactions", token_a, {**pet, "other_name": "GROCERIES"}
     )
     status, reused = call(
-        "POST", f"/transactions/{id_of(shopping)}/promote-other", token_a, {"pin": PIN}
+        "POST", f"/transactions/{id_of(shopping)}/promote-other", token_a, {}
     )
     check(
         "a name that is already a category, in any capitals, uses that category",
@@ -1011,7 +1124,7 @@ def main() -> None:
         "POST",
         f"/transactions/{id_of(toys)}/promote-other",
         token_a,
-        {"pin": PIN, "name": "others"},
+        {"name": "others"},
     )
     check("Others cannot be the new category's name", status, 422)
 
@@ -1021,13 +1134,75 @@ def main() -> None:
         token_a,
         {**pet, "category_id": id_of(under_bills), "other_name": "Internet"},
     )
-    call("POST", f"/transactions/{id_of(internet)}/promote-other", token_a, {"pin": PIN})
+    status, promoted = call(
+        "POST", f"/transactions/{id_of(internet)}/promote-other", token_a, {}
+    )
+    check(
+        "the new category is named in full",
+        (promoted or {}).get("category_name"),
+        "Bills › Internet",
+    )
     status, rows = call("GET", f"/trackers/{one}/categories", token_a)
     check(
         "an entry under Bills › Others becomes another of Bills' subcategories",
         next((row["parent_id"] for row in rows or [] if row["name"] == "Internet"), None),
         bills["id"],
     )
+
+    status, vet = call("POST", "/transactions", token_a, {**pet, "other_name": "Vet"})
+    status, promoted = call(
+        "POST",
+        f"/transactions/{id_of(vet)}/promote-other",
+        token_a,
+        {"name": "Pets", "subcategory_name": "Vet visits"},
+    )
+    check(
+        "an Others entry can become a new category with a sub-category",
+        (status, (promoted or {}).get("category_name"), (promoted or {}).get("created")),
+        (200, "Pets › Vet visits", True),
+    )
+    status, rows = call("GET", f"/trackers/{one}/categories", token_a)
+    pets = next((row for row in rows or [] if row["name"] == "Pets"), {})
+    check(
+        "both are made and switched on, one inside the other",
+        (
+            pets.get("is_enabled"),
+            pets.get("has_children"),
+            next((row["parent_id"] for row in rows or [] if row["name"] == "Vet visits"), None),
+        ),
+        (True, True, pets.get("id")),
+    )
+
+    status, water_bill = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {**pet, "category_id": id_of(under_bills), "other_name": "Water filter"},
+    )
+    status, _ = call(
+        "POST",
+        f"/transactions/{id_of(water_bill)}/promote-other",
+        token_a,
+        {"subcategory_name": "Parts"},
+    )
+    check("an entry under Bills › Others cannot make a third level", status, 409)
+
+    status, _ = call(
+        "POST",
+        f"/transactions/{id_of(water_bill)}/promote-other",
+        token_a,
+        {"name": "Groceries", "subcategory_name": "Snacks"},
+    )
+    check("an entry under Bills › Others cannot make a third level either way", status, 409)
+
+    status, snack = call("POST", "/transactions", token_a, {**pet, "other_name": "Snack"})
+    status, _ = call(
+        "POST",
+        f"/transactions/{id_of(snack)}/promote-other",
+        token_a,
+        {"name": "groceries", "subcategory_name": "Snacks"},
+    )
+    check("a category without sub-categories is not given its first one from here", status, 409)
 
     status, renamed = call(
         "PATCH", f"/transactions/{id_of(toys)}", token_a, {"other_name": "Pet toys"}
@@ -1047,8 +1222,68 @@ def main() -> None:
         (200, None),
     )
 
-    status, _ = call("POST", f"/transactions/{pay['id']}/promote-other", token_a, {"pin": PIN})
+    status, _ = call("POST", f"/transactions/{pay['id']}/promote-other", token_a, {})
     check("only an entry under Others can be given a category this way", status, 409)
+
+    print("\nNew categories while adding an entry")
+    make = f"/trackers/{one}/categories/find-or-create"
+
+    status, books = call("POST", make, token_a, {"kind": "expense", "name": "  Books  "})
+    check(
+        "make a category from the add form",
+        (
+            status,
+            (books or {}).get("name"),
+            (books or {}).get("parent_id"),
+            (books or {}).get("is_enabled"),
+        ),
+        (200, "Books", None, True),
+    )
+    status, again = call("POST", make, token_a, {"name": "BOOKS"})
+    check("asking again in other capitals gives the same one", id_of(again), id_of(books))
+
+    status, _ = call("POST", "/transactions", token_a, {**expense, "category_id": id_of(books)})
+    check("an entry can be filed under it straight away", status, 201)
+
+    status, seeds = call("POST", make, token_a, {"name": "Garden", "subcategory_name": "Seeds"})
+    status, rows = call("GET", f"/trackers/{one}/categories", token_a)
+    garden = next((row for row in rows or [] if row["name"] == "Garden"), {})
+    check(
+        "a new category with a sub-category gives back the sub-category",
+        (status, (seeds or {}).get("name"), (seeds or {}).get("parent_id"), garden.get("is_enabled")),
+        (200, "Seeds", garden.get("id"), True),
+    )
+
+    status, food = call("POST", make, token_a, {"name": "pets", "subcategory_name": "Food"})
+    check(
+        "a new sub-category under an existing category that has them",
+        (status, (food or {}).get("parent_id")),
+        (200, pets.get("id")),
+    )
+
+    status, wifi = call("POST", make, token_a, {"parent_id": bills["id"], "name": "Wifi"})
+    check(
+        "a new sub-category of a chosen category",
+        (status, (wifi or {}).get("parent_id")),
+        (200, bills["id"]),
+    )
+
+    status, _ = call(
+        "POST", make, token_a, {"parent_id": bills["id"], "name": "Wifi", "subcategory_name": "Router"}
+    )
+    check("a sub-category cannot have sub-categories", status, 409)
+
+    status, _ = call("POST", make, token_a, {"parent_id": groceries["id"], "name": "Snacks"})
+    check("a category without sub-categories gets its first one from Categories only", status, 409)
+
+    status, _ = call("POST", make, token_a, {"name": "Groceries", "subcategory_name": "Snacks"})
+    check("nor by naming it with a sub-category", status, 409)
+
+    status, _ = call("POST", make, token_a, {"name": "others"})
+    check("Others cannot be a new category's name", status, 422)
+
+    status, _ = call("POST", make, token_a, {"name": "Garden", "subcategory_name": "OTHERS"})
+    check("nor a new sub-category's", status, 422)
 
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)
@@ -1074,8 +1309,17 @@ def main() -> None:
     )
     check("another account's tracker has no Others to give", status, 404)
 
-    status, _ = call("POST", f"/transactions/{pay['id']}/promote-other", token_b, {"pin": PIN})
+    status, _ = call("POST", f"/transactions/{pay['id']}/promote-other", token_b, {})
     check("another account's entry cannot be given a category", status, 404)
+
+    status, _ = call("POST", f"/transactions/{pay['id']}/delete-code", token_b)
+    check("no deletion code is sent for another account's entry", status, 404)
+
+    status, _ = call("POST", f"/transactions/{id_of(groceries_v3)}/restore", token_b, {})
+    check("another account's entry cannot be restored", status, 404)
+
+    status, _ = call("POST", f"/trackers/{one}/categories/find-or-create", token_b, {"name": "Mine"})
+    check("no category can be made in another account's tracker", status, 404)
 
     status, _ = call("GET", f"/trackers/{one}/transactions", token_b)
     check("another account's transactions cannot be listed", status, 404)
