@@ -66,6 +66,19 @@ class CategoryApi(private val client: HttpClient = ApiClient.httpClient) {
             }
         }
 
+    /** The category to file an entry under, made on the server if it does not exist yet. */
+    suspend fun findOrCreate(
+        token: String,
+        trackerId: Int,
+        request: CategoryFindOrCreateRequest,
+    ): ApiResult<TrackerCategoryResponse> =
+        callReturningBody("Could not add it to your categories") {
+            client.post("trackers/$trackerId/categories/find-or-create") {
+                bearer(token)
+                setBody(request)
+            }
+        }
+
     suspend fun rename(
         token: String,
         categoryId: Int,

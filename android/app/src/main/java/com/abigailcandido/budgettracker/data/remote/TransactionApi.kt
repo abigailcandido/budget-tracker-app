@@ -65,6 +65,12 @@ class TransactionApi(private val client: HttpClient = ApiClient.httpClient) {
             }
         }
 
+    /** Emails a six-digit code that deleting this entry needs. */
+    suspend fun deleteCode(token: String, transactionId: Int): ApiResult<EmailCodeResponse> =
+        callReturningBody("Could not send the code") {
+            client.post("transactions/$transactionId/delete-code") { bearer(token) }
+        }
+
     suspend fun delete(
         token: String,
         transactionId: Int,
@@ -72,6 +78,18 @@ class TransactionApi(private val client: HttpClient = ApiClient.httpClient) {
     ): ApiResult<Unit> =
         callReturningNothing("Could not delete the entry") {
             client.delete("transactions/$transactionId") {
+                bearer(token)
+                setBody(request)
+            }
+        }
+
+    suspend fun restore(
+        token: String,
+        transactionId: Int,
+        request: TransactionRestoreRequest,
+    ): ApiResult<TransactionResponse> =
+        callReturningBody("Could not restore the entry") {
+            client.post("transactions/$transactionId/restore") {
                 bearer(token)
                 setBody(request)
             }

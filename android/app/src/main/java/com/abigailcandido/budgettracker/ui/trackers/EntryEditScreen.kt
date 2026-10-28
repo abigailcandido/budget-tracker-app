@@ -18,7 +18,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -28,6 +27,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SelectableDates
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -41,7 +41,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
@@ -61,22 +60,20 @@ fun EntryEditScreen(
     onSubcategoryChange: (Int) -> Unit,
     onOtherNameChange: (String) -> Unit,
     onUseCategoryMatch: () -> Unit,
+    onAddToCategoriesChange: (Boolean) -> Unit,
+    onWithSubcategoryChange: (Boolean) -> Unit,
+    onSubcategoryNameChange: (String) -> Unit,
     onAmountChange: (String) -> Unit,
     onDateChange: (LocalDate) -> Unit,
     onNoteChange: (String) -> Unit,
     onReasonChange: (String) -> Unit,
     onRetryCategories: () -> Unit,
     onSave: () -> Unit,
-    onDeleteClick: () -> Unit,
-    onDeleteReasonChange: (String) -> Unit,
-    onDeletePinChange: (String) -> Unit,
-    onConfirmDelete: () -> Unit,
-    onDismissDelete: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // The back gesture takes the same route as Cancel, so it is ignored while
-    // a save or delete is on its way, exactly like the Cancel button.
+    // a save is on its way, exactly like the Cancel button.
     BackHandler(onBack = onCancel)
 
     var openPicker by remember { mutableStateOf<Picker?>(null) }
@@ -197,6 +194,9 @@ fun EntryEditScreen(
                     onOpenSubcategory = { openPicker = Picker.Subcategory },
                     onOtherNameChange = onOtherNameChange,
                     onUseCategoryMatch = onUseCategoryMatch,
+                    onAddToCategoriesChange = onAddToCategoriesChange,
+                    onWithSubcategoryChange = onWithSubcategoryChange,
+                    onSubcategoryNameChange = onSubcategoryNameChange,
                     onRetry = onRetryCategories,
                 )
             }
@@ -242,18 +242,6 @@ fun EntryEditScreen(
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodyMedium,
                 )
-            }
-
-            if (!form.isNew) {
-                TextButton(
-                    onClick = onDeleteClick,
-                    enabled = !form.isBusy,
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error,
-                    ),
-                ) {
-                    Text(if (form.isOpening) "Delete opening balance" else "Delete transaction")
-                }
             }
         }
     }
@@ -305,90 +293,6 @@ fun EntryEditScreen(
 
         null -> Unit
     }
-
-    if (form.isConfirmingDelete) {
-        DeleteDialog(
-            form = form,
-            walletName = wallet?.name,
-            onReasonChange = onDeleteReasonChange,
-            onPinChange = onDeletePinChange,
-            onConfirm = onConfirmDelete,
-            onDismiss = onDismissDelete,
-        )
-    }
-}
-
-/**
- * Deleting asks why, and for the PIN again. The entry is not erased: it stays
- * in the list marked Deleted, and the reason is kept in its history.
- */
-@Composable
-private fun DeleteDialog(
-    form: EntryForm,
-    walletName: String?,
-    onReasonChange: (String) -> Unit,
-    onPinChange: (String) -> Unit,
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(if (form.isOpening) "Delete this opening balance?" else "Delete this transaction?")
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "It stays in the list marked Deleted, with its history, and " +
-                            "stops counting towards ${walletName ?: "the wallet"}'s balance.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                OutlinedTextField(
-                    value = form.deleteReason,
-                    onValueChange = onReasonChange,
-                    label = { Text("Reason") },
-                    placeholder = { Text("Such as Entered twice") },
-                    enabled = !form.isDeleting,
-                    maxLines = 3,
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.Sentences,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = form.deletePin,
-                    onValueChange = onPinChange,
-                    label = { Text("PIN") },
-                    singleLine = true,
-                    enabled = !form.isDeleting,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (form.deleteError != null) {
-                    Text(
-                        text = form.deleteError,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = onConfirm,
-                enabled = form.canConfirmDelete,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error,
-                ),
-            ) {
-                Text(if (form.isDeleting) "Deleting…" else "Delete")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !form.isDeleting) { Text("Cancel") }
-        },
-    )
 }
 
 /**
@@ -405,6 +309,9 @@ private fun CategorySection(
     onOpenSubcategory: () -> Unit,
     onOtherNameChange: (String) -> Unit,
     onUseCategoryMatch: () -> Unit,
+    onAddToCategoriesChange: (Boolean) -> Unit,
+    onWithSubcategoryChange: (Boolean) -> Unit,
+    onSubcategoryNameChange: (String) -> Unit,
     onRetry: () -> Unit,
 ) {
     val kindWord = if (form.type == EntryType.Income) "income" else "expense"
@@ -466,6 +373,9 @@ private fun CategorySection(
                     form = form,
                     onValueChange = onOtherNameChange,
                     onUseCategoryMatch = onUseCategoryMatch,
+                    onAddToCategoriesChange = onAddToCategoriesChange,
+                    onWithSubcategoryChange = onWithSubcategoryChange,
+                    onSubcategoryNameChange = onSubcategoryNameChange,
                 )
             }
         }
@@ -475,16 +385,22 @@ private fun CategorySection(
 /**
  * What an entry under Others was. A name that is already a category, in any
  * mix of capitals, is refused, with a button to file the entry there instead.
+ * "Add to my categories" files it under a new category of that name instead
+ * of under Others; at the top level, that category can hold a sub-category.
  */
 @Composable
 private fun OtherNameField(
     form: EntryForm,
     onValueChange: (String) -> Unit,
     onUseCategoryMatch: () -> Unit,
+    onAddToCategoriesChange: (Boolean) -> Unit,
+    onWithSubcategoryChange: (Boolean) -> Unit,
+    onSubcategoryNameChange: (String) -> Unit,
 ) {
     // Nothing is called a problem until something has been typed.
     val problem = form.otherNameProblem.takeIf { form.otherName.isNotBlank() }
     val match = form.otherNameMatch
+    val newCategory = form.newCategoryLabel
 
     Column {
         OutlinedTextField(
@@ -499,8 +415,13 @@ private fun OtherNameField(
             isError = problem != null,
             supportingText = {
                 Text(
-                    problem ?: "Saved under Others. You can add it to your categories " +
-                    "later, from its details."
+                    when {
+                        problem != null -> problem
+                        newCategory != null -> "Saved under a category of its own: $newCategory."
+                        form.addToCategories -> "Saved under a category of its own."
+                        else -> "Saved under Others. You can add it to your categories " +
+                                "later, from its details."
+                    }
                 )
             },
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
@@ -511,8 +432,73 @@ private fun OtherNameField(
                 Text("Use ${match.label} instead")
             }
         }
+
+        SwitchRow(
+            label = "Add to my categories",
+            checked = form.addToCategories,
+            enabled = !form.isBusy,
+            onCheckedChange = onAddToCategoriesChange,
+        )
+
+        // Only a new top-level category can hold a sub-category; one under
+        // "Bills › Others" is a sub-category already.
+        if (form.addToCategories && form.canHaveSubcategory) {
+            SwitchRow(
+                label = "Give it a sub-category",
+                checked = form.withSubcategory,
+                enabled = !form.isBusy,
+                onCheckedChange = onWithSubcategoryChange,
+            )
+            if (form.withSubcategory) {
+                val subProblem = form.subcategoryNameProblem
+                    .takeIf { form.subcategoryName.isNotBlank() }
+                OutlinedTextField(
+                    value = form.subcategoryName,
+                    onValueChange = onSubcategoryNameChange,
+                    label = { Text("Sub-category") },
+                    placeholder = { Text("Such as Food") },
+                    singleLine = true,
+                    enabled = !form.isBusy,
+                    isError = subProblem != null,
+                    supportingText = if (subProblem != null) {
+                        { Text(subProblem) }
+                    } else {
+                        null
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
     }
-}/** A field that looks like the others but opens a chooser when tapped. */
+}
+
+/** A label with an on/off switch at the end of the row. */
+@Composable
+private fun SwitchRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+    }
+}
+
+/** A field that looks like the others but opens a chooser when tapped. */
 @Composable
 private fun PickerField(
     label: String,

@@ -56,7 +56,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.abigailcandido.budgettracker.data.remote.EntryType
-import com.abigailcandido.budgettracker.data.remote.isAdjusted
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
@@ -339,17 +338,17 @@ fun TrackerScreen(
                 TextButton(onClick = onDismissActionError) { Text("OK") }
             },
         )
+    }
 
-        if (state.notice != null) {
-            AlertDialog(
-                onDismissRequest = onDismissNotice,
-                title = { Text("Done") },
-                text = { Text(state.notice) },
-                confirmButton = {
-                    TextButton(onClick = onDismissNotice) { Text("OK") }
-                },
-            )
-        }
+    if (state.notice != null) {
+        AlertDialog(
+            onDismissRequest = onDismissNotice,
+            title = { Text("Done") },
+            text = { Text(state.notice) },
+            confirmButton = {
+                TextButton(onClick = onDismissNotice) { Text("OK") }
+            },
+        )
     }
 }
 
@@ -689,16 +688,7 @@ private fun EntryRow(
                     // Shrinks a long title instead of pushing the tag off the row.
                     modifier = Modifier.weight(1f, fill = false),
                 )
-                when {
-                    entry.isDeleted -> {
-                        Spacer(Modifier.width(8.dp))
-                        DeletedTag()
-                    }
-                    entry.isAdjusted -> {
-                        Spacer(Modifier.width(8.dp))
-                        AdjustedTag()
-                    }
-                }
+                EntryTag(entry = entry, modifier = Modifier.padding(start = 8.dp))
             }
             if (details.isNotEmpty()) {
                 Text(

@@ -64,6 +64,8 @@ fun ApiErrorBody.readableMessage(fallback: String): String {
             ?.get("msg")
             ?.let { it as? JsonPrimitive }
             ?.contentOrNull
+            // Pydantic puts this in front of every message a validator raises.
+            ?.removePrefix("Value error, ")
             ?: fallback
         else -> fallback
     }

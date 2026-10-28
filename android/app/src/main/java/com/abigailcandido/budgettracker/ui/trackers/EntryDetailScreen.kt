@@ -18,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -25,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -44,10 +46,11 @@ import com.abigailcandido.budgettracker.data.remote.entryType
 import com.abigailcandido.budgettracker.data.remote.isAdjusted
 
 /**
- * One entry, read-only, with its history once it has been corrected or
- * deleted. Edit asks for the PIN, and only then opens the form. An entry
- * under Others can be added to the categories from here, which asks for the
- * PIN too. A deleted entry can only be looked at.
+ * One entry, read-only, with its history once it has been corrected, deleted
+ * or restored. Edit asks for the PIN, and only then opens the form. Delete
+ * asks for a reason and a code sent to the account's email. A deleted entry
+ * can only be looked at, or restored. An entry under Others can be added to
+ * the categories from here.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,9 +63,20 @@ fun EntryDetailScreen(
     onConfirmPin: () -> Unit,
     onDismissPin: () -> Unit,
     onRetryHistory: () -> Unit,
+    onDeleteClick: () -> Unit,
+    onDeleteReasonChange: (String) -> Unit,
+    onSendDeleteCode: () -> Unit,
+    onDeleteCodeChange: (String) -> Unit,
+    onConfirmDelete: () -> Unit,
+    onDismissDelete: () -> Unit,
+    onRestoreClick: () -> Unit,
+    onRestoreReasonChange: (String) -> Unit,
+    onConfirmRestore: () -> Unit,
+    onDismissRestore: () -> Unit,
     onPromoteClick: () -> Unit,
     onPromoteNameChange: (String) -> Unit,
-    onPromotePinChange: (String) -> Unit,
+    onPromoteWithSubcategoryChange: (Boolean) -> Unit,
+    onPromoteSubcategoryNameChange: (String) -> Unit,
     onConfirmPromote: () -> Unit,
     onDismissPromote: () -> Unit,
     modifier: Modifier = Modifier,
@@ -100,8 +114,13 @@ fun EntryDetailScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (entry.isDeleted) {
+                    Button(onClick = onRestoreClick, modifier = Modifier.fillMaxWidth()) {
+                        Text("Restore")
+                    }
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "Deleted entries are kept for the record and can't be edited.",
+                        text = "Restoring makes it count towards its wallet again. " +
+                                "The deletion stays in its history.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -112,12 +131,26 @@ fun EntryDetailScreen(
                         }
                         Spacer(Modifier.height(8.dp))
                     }
-                    Button(onClick = onEditClick, modifier = Modifier.fillMaxWidth()) {
-                        Text("Edit")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = onDeleteClick,
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Delete")
+                        }
+                        Button(onClick = onEditClick, modifier = Modifier.weight(1f)) {
+                            Text("Edit")
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "You'll be asked for your PIN first.",
+                        text = "Edit asks for your PIN. Delete sends a code to your email.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -143,16 +176,7 @@ fun EntryDetailScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                when {
-                    entry.isDeleted -> {
-                        Spacer(Modifier.width(8.dp))
-                        DeletedTag()
-                    }
-                    entry.isAdjusted -> {
-                        Spacer(Modifier.width(8.dp))
-                        AdjustedTag()
-                    }
-                }
+                EntryTag(entry = entry, modifier = Modifier.padding(start = 8.dp))
             }
 
             Spacer(Modifier.height(16.dp))
@@ -161,8 +185,18 @@ fun EntryDetailScreen(
             DetailRow("Wallet", entry.walletName)
             DetailRow("Date", longDate(entry.transactionDate))
             DetailRow("Note", entry.description ?: "—")
-            // A correction is a new row, so its time is when the change was made.
-            DetailRow(if (entry.isAdjusted) "Corrected" else "Recorded", displayDateTime(entry.createdAt))
+            // A correction or a restore is a new row, so its time is when that happened.
+            DetailRow(
+                when {
+                    entry.isRestoration -> "Restored"
+                    entry.isAdjusted -> "Corrected"
+                    else -> "Recorded"
+                },
+                displayDateTime(entry.createdAt),
+            )
+            if (entry.isRestoration && entry.reason != null) {
+                DetailRow("Reason", entry.reason)
+            }
             // The deletion is a reversal in the history, so these appear once it has loaded.
             if (deletion != null) {
                 DetailRow("Deleted", displayDateTime(deletion.createdAt))
@@ -180,20 +214,35 @@ fun EntryDetailScreen(
         }
     }
 
-    if (detail.isPinOpen) {
-        PinDialog(
+    when {
+        detail.isPinOpen -> PinDialog(
             detail = detail,
             onPinChange = onPinChange,
             onConfirm = onConfirmPin,
             onDismiss = onDismissPin,
         )
-    }
 
-    if (detail.isPromoteOpen) {
-        PromoteDialog(
+        detail.isDeleteOpen -> DeleteDialog(
+            detail = detail,
+            onReasonChange = onDeleteReasonChange,
+            onSendCode = onSendDeleteCode,
+            onCodeChange = onDeleteCodeChange,
+            onConfirm = onConfirmDelete,
+            onDismiss = onDismissDelete,
+        )
+
+        detail.isRestoreOpen -> RestoreDialog(
+            detail = detail,
+            onReasonChange = onRestoreReasonChange,
+            onConfirm = onConfirmRestore,
+            onDismiss = onDismissRestore,
+        )
+
+        detail.isPromoteOpen -> PromoteDialog(
             detail = detail,
             onNameChange = onPromoteNameChange,
-            onPinChange = onPromotePinChange,
+            onWithSubcategoryChange = onPromoteWithSubcategoryChange,
+            onSubcategoryNameChange = onPromoteSubcategoryNameChange,
             onConfirm = onConfirmPromote,
             onDismiss = onDismissPromote,
         )
@@ -201,8 +250,176 @@ fun EntryDetailScreen(
 }
 
 /**
+ * Deleting asks why, then sends a six-digit code to the account's email,
+ * which the server checks. The entry is not erased: it stays in the list
+ * marked Deleted, with the reason kept in its history.
+ */
+@Composable
+private fun DeleteDialog(
+    detail: EntryDetailState,
+    onReasonChange: (String) -> Unit,
+    onSendCode: () -> Unit,
+    onCodeChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val entry = detail.entry
+    val isBusy = detail.isSendingCode || detail.isDeleting
+    val sentTo = detail.codeSentTo
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (entry.entryType == EntryType.Opening) {
+                    "Delete this opening balance?"
+                } else {
+                    "Delete this transaction?"
+                }
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "It stays in the list marked Deleted, with its history, and " +
+                            "stops counting towards ${entry.walletName}'s balance. You " +
+                            "can restore it later.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedTextField(
+                    value = detail.deleteReason,
+                    onValueChange = onReasonChange,
+                    label = { Text("Reason") },
+                    placeholder = { Text("Such as Entered twice") },
+                    enabled = !isBusy,
+                    maxLines = 3,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (sentTo == null) {
+                    Text(
+                        text = "To confirm, a 6-digit code will be sent to your email.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        text = "A 6-digit code was sent to $sentTo. It works for " +
+                                "${detail.codeMinutes} minutes.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = detail.deleteCode,
+                        onValueChange = onCodeChange,
+                        label = { Text("Code from your email") },
+                        singleLine = true,
+                        enabled = !isBusy,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextButton(onClick = onSendCode, enabled = detail.canSendCode) {
+                        Text(if (detail.isSendingCode) "Sending…" else "Send a new code")
+                    }
+                }
+                if (detail.deleteError != null) {
+                    Text(
+                        text = detail.deleteError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (sentTo == null) {
+                TextButton(onClick = onSendCode, enabled = detail.canSendCode) {
+                    Text(if (detail.isSendingCode) "Sending…" else "Send code")
+                }
+            } else {
+                TextButton(
+                    onClick = onConfirm,
+                    enabled = detail.canConfirmDelete,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Text(if (detail.isDeleting) "Deleting…" else "Delete")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isBusy) { Text("Cancel") }
+        },
+    )
+}
+
+/** Brings a deleted entry back. The deletion and the restore both stay in its history. */
+@Composable
+private fun RestoreDialog(
+    detail: EntryDetailState,
+    onReasonChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val entry = detail.entry
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (entry.entryType == EntryType.Opening) {
+                    "Restore this opening balance?"
+                } else {
+                    "Restore this transaction?"
+                }
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "It counts towards ${entry.walletName}'s balance again. " +
+                            "The deletion stays in its history.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedTextField(
+                    value = detail.restoreReason,
+                    onValueChange = onReasonChange,
+                    label = { Text("Reason (optional)") },
+                    placeholder = { Text("Such as Deleted by mistake") },
+                    enabled = !detail.isRestoring,
+                    maxLines = 3,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (detail.restoreError != null) {
+                    Text(
+                        text = detail.restoreError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = !detail.isRestoring) {
+                Text(if (detail.isRestoring) "Restoring…" else "Restore")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !detail.isRestoring) { Text("Cancel") }
+        },
+    )
+}
+
+/**
  * Gives an Others entry a category of its own. The name starts as what the
- * entry was called and can be changed. If a category with that name already
+ * entry was called and can be changed. Under the top-level Others, the new
+ * category can hold a sub-category too. If a category with that name already
  * exists at the same level, in any mix of capitals, the entries go there and
  * no second one is made.
  */
@@ -210,7 +427,8 @@ fun EntryDetailScreen(
 private fun PromoteDialog(
     detail: EntryDetailState,
     onNameChange: (String) -> Unit,
-    onPinChange: (String) -> Unit,
+    onWithSubcategoryChange: (Boolean) -> Unit,
+    onSubcategoryNameChange: (String) -> Unit,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -218,6 +436,8 @@ private fun PromoteDialog(
     // "Bills" for an entry under Bills › Others, or nothing at the top level.
     val parent = entry.parentCategoryName
     val nameIsOthers = isOthersName(detail.promoteName)
+    val showsSubcategory = detail.canPromoteWithSubcategory && detail.promoteWithSubcategory
+    val subcategoryIsOthers = showsSubcategory && isOthersName(detail.promoteSubcategoryName)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -249,16 +469,43 @@ private fun PromoteDialog(
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
-                    value = detail.promotePin,
-                    onValueChange = onPinChange,
-                    label = { Text("PIN") },
-                    singleLine = true,
-                    enabled = !detail.isPromoting,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (detail.canPromoteWithSubcategory) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Give it a sub-category",
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = detail.promoteWithSubcategory,
+                            onCheckedChange = onWithSubcategoryChange,
+                            enabled = !detail.isPromoting,
+                        )
+                    }
+                }
+                if (showsSubcategory) {
+                    OutlinedTextField(
+                        value = detail.promoteSubcategoryName,
+                        onValueChange = onSubcategoryNameChange,
+                        label = { Text("Sub-category") },
+                        placeholder = { Text("Such as Food") },
+                        singleLine = true,
+                        enabled = !detail.isPromoting,
+                        isError = subcategoryIsOthers,
+                        supportingText = if (subcategoryIsOthers) {
+                            { Text("Choose a name other than Others.") }
+                        } else {
+                            null
+                        },
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Sentences,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 if (detail.promoteError != null) {
                     Text(
                         text = detail.promoteError,
@@ -289,7 +536,7 @@ private fun HistorySection(
     Text(text = "History", style = MaterialTheme.typography.titleMedium)
     Text(
         text = "Changes never overwrite a transaction. Every earlier version is " +
-                "kept, with when and why it was replaced or deleted.",
+                "kept, with when and why it was replaced, deleted or restored.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -314,19 +561,17 @@ private fun HistorySection(
 
         else -> versionsOf(detail.history).forEachIndexed { index, version ->
             if (index > 0) HorizontalDivider()
-            VersionItem(number = index, version = version, showsCurrency = showsCurrency)
+            VersionItem(version = version, showsCurrency = showsCurrency)
         }
     }
 }
 
 @Composable
 private fun VersionItem(
-    number: Int,
     version: EntryVersion,
     showsCurrency: Boolean,
 ) {
     val entry = version.entry
-    val name = if (number == 0) "Original" else "Correction $number"
     val details = listOfNotNull(
         entryTitle(entry).takeIf { entry.entryType != EntryType.Opening },
         entry.walletName,
@@ -341,9 +586,9 @@ private fun VersionItem(
     ) {
         Text(
             text = when (version.end) {
-                VersionEnd.Current -> "$name · current"
-                VersionEnd.Deleted -> "$name · deleted"
-                VersionEnd.Replaced -> name
+                VersionEnd.Current -> "${version.name} · current"
+                VersionEnd.Deleted -> "${version.name} · deleted"
+                VersionEnd.Replaced -> version.name
             },
             style = MaterialTheme.typography.labelLarge,
             color = if (version.end == VersionEnd.Deleted) {
@@ -361,12 +606,21 @@ private fun VersionItem(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // A restored version was made when it was restored, with that reason.
+        if (entry.isRestoration && entry.reason != null) {
+            Text(
+                text = "Reason for restoring: ${entry.reason}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        val made = if (entry.isRestoration) "Restored" else "Recorded"
         val ended = version.endedAt?.let { endedAt ->
             val word = if (version.end == VersionEnd.Deleted) "Deleted" else "Replaced"
             " · $word ${displayDateTime(endedAt)}"
         }
         Text(
-            text = "Recorded ${displayDateTime(entry.createdAt)}${ended.orEmpty()}",
+            text = "$made ${displayDateTime(entry.createdAt)}${ended.orEmpty()}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -449,11 +703,24 @@ private fun DetailRow(label: String, value: String) {
     }
 }
 
-/** The small "Adjusted" label on an entry that has been corrected. */
+/**
+ * The small label beside an entry that is not as first recorded: "Deleted",
+ * "Restored" or "Adjusted". Nothing for an entry that never changed.
+ */
 @Composable
-internal fun AdjustedTag(modifier: Modifier = Modifier) {
+internal fun EntryTag(entry: TransactionResponse, modifier: Modifier = Modifier) {
+    when {
+        entry.isDeleted -> DeletedTag(modifier)
+        entry.isRestoration -> AdjustedTag(modifier, text = "Restored")
+        entry.isAdjusted -> AdjustedTag(modifier)
+    }
+}
+
+/** The small "Adjusted" label on an entry that has been corrected, or "Restored". */
+@Composable
+internal fun AdjustedTag(modifier: Modifier = Modifier, text: String = "Adjusted") {
     Text(
-        text = "Adjusted",
+        text = text,
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onTertiaryContainer,
         modifier = modifier

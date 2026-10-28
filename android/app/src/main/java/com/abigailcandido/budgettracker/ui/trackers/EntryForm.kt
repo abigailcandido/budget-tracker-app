@@ -4,7 +4,6 @@ import com.abigailcandido.budgettracker.data.remote.CategoryKind
 import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.TrackerCategoryResponse
 import com.abigailcandido.budgettracker.data.remote.categoryKind
-import com.abigailcandido.budgettracker.ui.pin.PIN_LENGTH
 import java.time.LocalDate
 
 /** The longest note or reason the server keeps. */
@@ -81,6 +80,15 @@ data class EntryForm(
     /** What an entry under Others was, such as "Pet food". */
     val otherName: String = "",
     /**
+     * The "Add to my categories" switch under Others. Off, the entry is filed
+     * under Others with its name; on, it is filed under a category of that name.
+     */
+    val addToCategories: Boolean = false,
+    /** Only for a new top-level category: whether it holds a sub-category too. */
+    val withSubcategory: Boolean = false,
+    /** That sub-category's name, such as "Food" under a new "Pets". */
+    val subcategoryName: String = "",
+    /**
      * The category the entry had when the page opened. It stays on offer even
      * if it has since been switched off, so correcting an old amount never
      * forces a new category on the entry.
@@ -96,12 +104,6 @@ data class EntryForm(
     val categoryLoadError: String? = null,
     val isSaving: Boolean = false,
     val error: String? = null,
-    // ---- The delete dialog ----
-    val isConfirmingDelete: Boolean = false,
-    val deleteReason: String = "",
-    val deletePin: String = "",
-    val isDeleting: Boolean = false,
-    val deleteError: String? = null,
 ) {
     val isNew: Boolean
         get() = editingId == null
@@ -111,7 +113,7 @@ data class EntryForm(
         get() = type == EntryType.Opening
 
     val isBusy: Boolean
-        get() = isSaving || isDeleting
+        get() = isSaving
 
     /** Expense categories for an expense, income categories for an income. */
     val availableCategories: List<CategoryOption>
@@ -129,6 +131,38 @@ data class EntryForm(
     /** The parent whose Others is chosen, or null for the top-level Others. */
     val othersParentId: Int?
         get() = if (topCategoryId == OTHERS_CHOICE) null else selectedCategory?.id
+
+    /**
+     * Whether a new category made from the Others name can hold a sub-category.
+     * Only at the top level: under "Bills › Others" the name is already a
+     * sub-category, and there is no third level.
+     */
+    val canHaveSubcategory: Boolean
+        get() = topCategoryId == OTHERS_CHOICE
+
+    /** Whether the entry will be filed under a new category rather than under Others. */
+    val isMakingCategory: Boolean
+        get() = isOthersChosen && addToCategories
+
+    private val isMakingSubcategory: Boolean
+        get() = isMakingCategory && canHaveSubcategory && withSubcategory
+
+    /**
+     * The category the entry will be saved under when "Add to my categories"
+     * is on: "Pets", "Pets › Food", or "Bills › Internet". Null otherwise.
+     */
+    val newCategoryLabel: String?
+        get() {
+            if (!isMakingCategory) return null
+            val name = otherName.trim().ifEmpty { return null }
+            val parentName = selectedCategory?.name.takeIf { !canHaveSubcategory }
+            val subName = subcategoryName.trim()
+            return when {
+                parentName != null -> "$parentName › $name"
+                isMakingSubcategory && subName.isNotEmpty() -> "$name › $subName"
+                else -> name
+            }
+        }
 
     /** The real category the entry is filed under, when Others is not chosen. */
     val leafCategoryId: Int?
@@ -162,6 +196,15 @@ data class EntryForm(
             return null
         }
 
+    /** Why the new sub-category's name cannot be saved yet, or null when it can. */
+    val subcategoryNameProblem: String?
+        get() = when {
+            !isMakingSubcategory -> null
+            subcategoryName.isBlank() -> "Name the sub-category."
+            isOthersName(subcategoryName) -> "Choose a name other than Others."
+            else -> null
+        }
+
     /** Why the Others name cannot be saved yet, or null when it can. */
     val otherNameProblem: String?
         get() = when {
@@ -186,7 +229,11 @@ data class EntryForm(
         if (isOpening) OPENING_AMOUNT_PATTERN.matches(value) else AMOUNT_PATTERN.matches(value)
 
     private val hasCompleteCategory: Boolean
-        get() = if (isOthersChosen) otherNameProblem == null else leafCategoryId != null
+        get() = if (isOthersChosen) {
+            otherNameProblem == null && subcategoryNameProblem == null
+        } else {
+            leafCategoryId != null
+        }
 
     val canSave: Boolean
         get() {
@@ -199,9 +246,6 @@ data class EntryForm(
                 value.signum() > 0 && walletId != null && hasCompleteCategory
             }
         }
-
-    val canConfirmDelete: Boolean
-        get() = !isDeleting && deleteReason.isNotBlank() && deletePin.length == PIN_LENGTH
 }
 
 /** Whether a category is an Others bucket, whatever capitals it was given. */

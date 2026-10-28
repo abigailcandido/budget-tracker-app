@@ -328,10 +328,9 @@ class TrackerViewModel(
         loadEntryHistory()
     }
 
-    /** Back from the details page. Ignored while the PIN is being checked or a move is saving. */
+    /** Back from the details page. Ignored while anything on it is on its way to the server. */
     fun onDismissEntryDetail() {
-        val detail = _uiState.value.entryDetail
-        if (detail?.isCheckingPin == true || detail?.isPromoting == true) return
+        if (_uiState.value.entryDetail?.isBusy == true) return
         historyJob?.cancel()
         _uiState.update { it.copy(entryDetail = null) }
     }
@@ -378,6 +377,138 @@ class TrackerViewModel(
         }
     }
 
+    // ---- Deleting, with a reason and a code sent to the account's email ----
+
+    fun onDeleteEntryClick() {
+        updateDetail { detail ->
+            if (detail.entry.isDeleted) {
+                detail
+            } else {
+                detail.copy(
+                    isDeleteOpen = true,
+                    deleteReason = "",
+                    codeSentTo = null,
+                    deleteCode = "",
+                    deleteError = null,
+                )
+            }
+        }
+    }
+
+    fun onDeleteReasonChange(value: String) {
+        updateDetail { it.copy(deleteReason = value.take(NOTE_MAX_LENGTH), deleteError = null) }
+    }
+
+    fun onDeleteCodeChange(value: String) {
+        if (!value.all(Char::isDigit)) return
+        updateDetail { it.copy(deleteCode = value.take(EMAIL_CODE_LENGTH), deleteError = null) }
+    }
+
+    fun onDismissDelete() {
+        updateDetail { detail ->
+            if (detail.isSendingCode || detail.isDeleting) {
+                detail
+            } else {
+                detail.copy(isDeleteOpen = false, deleteCode = "", deleteError = null)
+            }
+        }
+    }
+
+    /**
+     * Asks the server to email a code for deleting this entry. Asking again
+     * sends a new code; the server cancels the old one, and refuses for a
+     * moment after a code was sent, so a double tap never sends two.
+     */
+    fun sendDeleteCode() {
+        val detail = _uiState.value.entryDetail ?: return
+        if (!detail.canSendCode) return
+
+        viewModelScope.launch {
+            updateDetail { it.copy(isSendingCode = true, deleteError = null) }
+
+            when (val result = transactionRepository.sendDeleteCode(detail.entry.id)) {
+                is ApiResult.Success -> updateDetail {
+                    it.copy(
+                        isSendingCode = false,
+                        codeSentTo = result.data.sentTo,
+                        codeMinutes = result.data.expiresInMinutes,
+                        deleteCode = "",
+                    )
+                }
+                is ApiResult.Failure -> updateDetail {
+                    it.copy(isSendingCode = false, deleteError = result.message)
+                }
+            }
+        }
+    }
+
+    /**
+     * The server checks the code. A wrong one keeps the dialog open with the
+     * reason still filled in, and the message says how many tries are left.
+     */
+    fun confirmDeleteEntry() {
+        val detail = _uiState.value.entryDetail ?: return
+        if (!detail.canConfirmDelete) return
+
+        viewModelScope.launch {
+            updateDetail { it.copy(isDeleting = true, deleteError = null) }
+
+            when (
+                val result = transactionRepository.delete(
+                    detail.entry.id,
+                    detail.deleteReason,
+                    detail.deleteCode,
+                )
+            ) {
+                is ApiResult.Success -> closeDetailAndRefresh(notice = null)
+                is ApiResult.Failure -> updateDetail {
+                    it.copy(isDeleting = false, deleteCode = "", deleteError = result.message)
+                }
+            }
+        }
+    }
+
+    // ---- Restoring a deleted entry ----
+
+    fun onRestoreEntryClick() {
+        updateDetail { detail ->
+            if (!detail.entry.isDeleted) {
+                detail
+            } else {
+                detail.copy(isRestoreOpen = true, restoreReason = "", restoreError = null)
+            }
+        }
+    }
+
+    fun onRestoreReasonChange(value: String) {
+        updateDetail { it.copy(restoreReason = value.take(NOTE_MAX_LENGTH), restoreError = null) }
+    }
+
+    fun onDismissRestore() {
+        updateDetail { detail ->
+            if (detail.isRestoring) detail else detail.copy(isRestoreOpen = false, restoreError = null)
+        }
+    }
+
+    /** The restored entry is a new version, so the page closes and the list shows it. */
+    fun confirmRestore() {
+        val detail = _uiState.value.entryDetail ?: return
+        if (detail.isRestoring) return
+
+        viewModelScope.launch {
+            updateDetail { it.copy(isRestoring = true, restoreError = null) }
+
+            when (val result = transactionRepository.restore(detail.entry.id, detail.restoreReason)) {
+                is ApiResult.Success -> closeDetailAndRefresh(
+                    notice = "Restored. It counts towards ${result.data.walletName}'s balance again.",
+                )
+                is ApiResult.Failure -> updateDetail {
+                    it.copy(isRestoring = false, restoreError = result.message)
+                }
+            }
+        }
+    }
+
     // ---- Giving an Others entry a category of its own ----
 
     /** Opens the dialog with the entry's own Others name filled in. */
@@ -389,7 +520,8 @@ class TrackerViewModel(
                 detail.copy(
                     isPromoteOpen = true,
                     promoteName = detail.entry.otherName.orEmpty(),
-                    promotePin = "",
+                    promoteWithSubcategory = false,
+                    promoteSubcategoryName = "",
                     promoteError = null,
                 )
             }
@@ -400,18 +532,25 @@ class TrackerViewModel(
         updateDetail { it.copy(promoteName = value.take(OTHER_NAME_MAX_LENGTH), promoteError = null) }
     }
 
-    fun onPromotePinChange(value: String) {
-        if (!value.all(Char::isDigit)) return
-        updateDetail { it.copy(promotePin = value.take(PIN_LENGTH), promoteError = null) }
+    fun onPromoteWithSubcategoryChange(value: Boolean) {
+        updateDetail { detail ->
+            if (!detail.canPromoteWithSubcategory) {
+                detail
+            } else {
+                detail.copy(promoteWithSubcategory = value, promoteError = null)
+            }
+        }
+    }
+
+    fun onPromoteSubcategoryNameChange(value: String) {
+        updateDetail {
+            it.copy(promoteSubcategoryName = value.take(OTHER_NAME_MAX_LENGTH), promoteError = null)
+        }
     }
 
     fun onDismissPromote() {
         updateDetail { detail ->
-            if (detail.isPromoting) {
-                detail
-            } else {
-                detail.copy(isPromoteOpen = false, promotePin = "", promoteError = null)
-            }
+            if (detail.isPromoting) detail else detail.copy(isPromoteOpen = false, promoteError = null)
         }
     }
 
@@ -424,21 +563,22 @@ class TrackerViewModel(
     fun confirmPromote() {
         val detail = _uiState.value.entryDetail ?: return
         if (!detail.canConfirmPromote) return
-        val name = detail.promoteName.trim()
+        val subcategoryName = detail.promoteSubcategoryName
+            .takeIf { detail.canPromoteWithSubcategory && detail.promoteWithSubcategory }
 
         viewModelScope.launch {
             updateDetail { it.copy(isPromoting = true, promoteError = null) }
 
-            when (val result = transactionRepository.promoteOther(detail.entry.id, name, detail.promotePin)) {
-                is ApiResult.Success -> {
-                    historyJob?.cancel()
-                    _uiState.update {
-                        it.copy(entryDetail = null, notice = promoteNotice(result.data))
-                    }
-                    refresh()
-                }
+            when (
+                val result = transactionRepository.promoteOther(
+                    detail.entry.id,
+                    detail.promoteName,
+                    subcategoryName,
+                )
+            ) {
+                is ApiResult.Success -> closeDetailAndRefresh(notice = promoteNotice(result.data))
                 is ApiResult.Failure -> updateDetail {
-                    it.copy(isPromoting = false, promotePin = "", promoteError = result.message)
+                    it.copy(isPromoting = false, promoteError = result.message)
                 }
             }
         }
@@ -468,6 +608,17 @@ class TrackerViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * After a deletion, a restore or a move out of Others, the version the page
+     * showed is no longer the one in the list, so the page closes and the
+     * list is refreshed, with a short notice if there is something to say.
+     */
+    private fun closeDetailAndRefresh(notice: String?) {
+        historyJob?.cancel()
+        _uiState.update { it.copy(entryDetail = null, notice = notice) }
+        refresh()
     }
 
     /** Changes the details page's state if it is open, and does nothing otherwise. */
@@ -591,6 +742,22 @@ class TrackerViewModel(
         updateForm { it.copy(otherName = value.take(OTHER_NAME_MAX_LENGTH), error = null) }
     }
 
+    /** The "Add to my categories" switch under Others. Off by default. */
+    fun onAddToCategoriesChange(value: Boolean) {
+        updateForm { it.copy(addToCategories = value, error = null) }
+    }
+
+    /** Whether the new top-level category holds a sub-category too. */
+    fun onWithSubcategoryChange(value: Boolean) {
+        updateForm { form ->
+            if (!form.canHaveSubcategory) form else form.copy(withSubcategory = value, error = null)
+        }
+    }
+
+    fun onSubcategoryNameChange(value: String) {
+        updateForm { it.copy(subcategoryName = value.take(OTHER_NAME_MAX_LENGTH), error = null) }
+    }
+
     /**
      * The name typed under Others is already a category, so the entry is
      * filed there instead, and the name is no longer needed.
@@ -639,16 +806,31 @@ class TrackerViewModel(
             val editingId = form.editingId
             val date = form.date.toString()
 
-            // Under Others, the Others category itself is fetched first, and
-            // made on the server if this is the first entry to go there.
+            val kind = if (form.type == EntryType.Income) CategoryKind.Income else CategoryKind.Expense
+
+            // Under Others, the category is fetched first: the new one named in
+            // the form when "Add to my categories" is on, otherwise the Others
+            // category itself. Either is made on the server if it does not exist yet.
             val categoryId: Int? = when {
                 form.isOpening -> null
-                form.isOthersChosen -> {
-                    val kind = if (form.type == EntryType.Income) {
-                        CategoryKind.Income
-                    } else {
-                        CategoryKind.Expense
+                form.isMakingCategory -> {
+                    val made = categoryRepository.findOrCreate(
+                        trackerId = trackerId,
+                        kind = kind,
+                        parentId = form.othersParentId,
+                        name = form.otherName,
+                        subcategoryName = form.subcategoryName
+                            .takeIf { form.canHaveSubcategory && form.withSubcategory },
+                    )
+                    when (made) {
+                        is ApiResult.Success -> made.data.id
+                        is ApiResult.Failure -> {
+                            updateForm { it.copy(isSaving = false, error = made.message) }
+                            return@launch
+                        }
                     }
+                }
+                form.isOthersChosen -> {
                     when (val others = categoryRepository.othersCategory(trackerId, kind, form.othersParentId)) {
                         is ApiResult.Success -> others.data.id
                         is ApiResult.Failure -> {
@@ -659,7 +841,12 @@ class TrackerViewModel(
                 }
                 else -> form.leafCategoryId
             }
-            val otherName = if (form.isOthersChosen) form.otherName.trim() else null
+            // Only an entry left under Others keeps a name of its own.
+            val otherName = if (form.isOthersChosen && !form.isMakingCategory) {
+                form.otherName.trim()
+            } else {
+                null
+            }
 
             val result = when {
                 // An opening balance keeps its wallet and has no type or category,
@@ -705,59 +892,6 @@ class TrackerViewModel(
                 is ApiResult.Success -> closeEntryFormAndRefresh()
                 is ApiResult.Failure -> updateForm {
                     it.copy(isSaving = false, error = result.message)
-                }
-            }
-        }
-    }
-
-    // ---- Deleting, with a reason and the PIN again ----
-
-    fun onDeleteEntryClick() {
-        updateForm {
-            it.copy(
-                isConfirmingDelete = true,
-                deleteReason = "",
-                deletePin = "",
-                deleteError = null,
-            )
-        }
-    }
-
-    fun onDeleteReasonChange(value: String) {
-        updateForm { it.copy(deleteReason = value.take(NOTE_MAX_LENGTH), deleteError = null) }
-    }
-
-    fun onDeletePinChange(value: String) {
-        if (!value.all(Char::isDigit)) return
-        updateForm { it.copy(deletePin = value.take(PIN_LENGTH), deleteError = null) }
-    }
-
-    fun onDismissDeleteEntry() {
-        updateForm { form ->
-            if (form.isDeleting) {
-                form
-            } else {
-                form.copy(isConfirmingDelete = false, deletePin = "", deleteError = null)
-            }
-        }
-    }
-
-    /**
-     * The server checks the PIN. A wrong one, or any other refusal, keeps the
-     * dialog open with the reason still filled in, so only the PIN is retyped.
-     */
-    fun confirmDeleteEntry() {
-        val form = _uiState.value.entryForm ?: return
-        val editingId = form.editingId ?: return
-        if (!form.canConfirmDelete) return
-
-        viewModelScope.launch {
-            updateForm { it.copy(isDeleting = true, deleteError = null) }
-
-            when (val result = transactionRepository.delete(editingId, form.deleteReason, form.deletePin)) {
-                is ApiResult.Success -> closeEntryFormAndRefresh()
-                is ApiResult.Failure -> updateForm {
-                    it.copy(isDeleting = false, deletePin = "", deleteError = result.message)
                 }
             }
         }

@@ -47,18 +47,32 @@ data class TransactionUpdateRequest(
     val reason: String? = null,
 )
 
-/** Deleting needs a reason and the PIN, and the server checks both. */
+/** Deleting needs a reason and the code just emailed for it. */
 @Serializable
 data class TransactionDeleteRequest(
     val reason: String,
-    val pin: String,
+    val code: String,
+)
+
+/** Where the deletion code went, such as "ab•••@gmail.com", and how long it works. */
+@Serializable
+data class EmailCodeResponse(
+    @SerialName("sent_to") val sentTo: String,
+    @SerialName("expires_in_minutes") val expiresInMinutes: Int,
+)
+
+@Serializable
+data class TransactionRestoreRequest(
+    // Optional, and left out when empty.
+    val reason: String? = null,
 )
 
 @Serializable
 data class PromoteOtherRequest(
     // Left out to use the entry's own Others name.
     val name: String? = null,
-    val pin: String,
+    // Only under the top-level Others: a sub-category to make under the new category.
+    @SerialName("subcategory_name") val subcategoryName: String? = null,
 )
 
 @Serializable
@@ -93,8 +107,12 @@ data class TransactionResponse(
     @SerialName("is_reversed") val isReversed: Boolean = false,
     // Deleted entries stay in the lists, marked as deleted and counting for nothing.
     @SerialName("is_deleted") val isDeleted: Boolean = false,
+    // The copy that brought a deleted entry back. Like a correction, it names
+    // the version it replaced.
+    @SerialName("is_restoration") val isRestoration: Boolean = false,
     @SerialName("other_name") val otherName: String? = null,
-    // On a reversal: why the entry was corrected or deleted.
+    // On a reversal: why the entry was corrected or deleted. On a restored
+    // entry: why it was restored.
     val reason: String? = null,
 )
 

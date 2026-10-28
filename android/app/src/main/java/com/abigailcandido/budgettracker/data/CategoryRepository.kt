@@ -3,6 +3,7 @@ package com.abigailcandido.budgettracker.data
 import com.abigailcandido.budgettracker.data.local.TokenStore
 import com.abigailcandido.budgettracker.data.remote.ApiResult
 import com.abigailcandido.budgettracker.data.remote.CategoryApi
+import com.abigailcandido.budgettracker.data.remote.CategoryFindOrCreateRequest
 import com.abigailcandido.budgettracker.data.remote.CategoryKind
 import com.abigailcandido.budgettracker.data.remote.CategoryResponse
 import com.abigailcandido.budgettracker.data.remote.OthersCategoryRequest
@@ -94,6 +95,31 @@ class CategoryRepository(
                 token,
                 trackerId,
                 OthersCategoryRequest(kind = kind.apiValue, parentId = parentId),
+            )
+        }
+
+    /**
+     * A category named on the add form instead of Others, found by name or made:
+     * a top-level one (with a sub-category if one is named, which is what comes
+     * back), or one of parentId's sub-categories. Switched on in this tracker.
+     */
+    suspend fun findOrCreate(
+        trackerId: Int,
+        kind: CategoryKind,
+        parentId: Int?,
+        name: String,
+        subcategoryName: String?,
+    ): ApiResult<TrackerCategoryResponse> =
+        tokenStore.withToken { token ->
+            api.findOrCreate(
+                token,
+                trackerId,
+                CategoryFindOrCreateRequest(
+                    kind = kind.apiValue,
+                    parentId = parentId,
+                    name = name.trim(),
+                    subcategoryName = subcategoryName?.trim()?.takeIf { it.isNotEmpty() },
+                ),
             )
         }
 

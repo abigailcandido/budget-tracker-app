@@ -31,6 +31,18 @@ data class CategoryCreateRequest(
     @SerialName("subcategory_names") val subcategoryNames: List<String>? = null,
 )
 
+/**
+ * A category typed in on the add form, found by name ignoring capitals or made.
+ * At the top level it can hold a sub-category, which is what comes back.
+ */
+@Serializable
+data class CategoryFindOrCreateRequest(
+    val kind: String,
+    @SerialName("parent_id") val parentId: Int? = null,
+    val name: String,
+    @SerialName("subcategory_name") val subcategoryName: String? = null,
+)
+
 /** Which Others bucket: the top-level one of a kind, or the one under a parent. */
 @Serializable
 data class OthersCategoryRequest(
