@@ -459,6 +459,15 @@ class CategoryFindOrCreateRequest(BaseModel):
         ),
     )
 
+    is_global: bool = Field(
+        default=False,
+        description=(
+            "Whether a category made now is offered to every tracker. Left out, "
+            "it belongs to this tracker only. Under a parent that belongs to "
+            "one tracker, it always belongs to that tracker."
+        ),
+    )
+
     @field_validator("name")
     @classmethod
     def require_name(cls, value: str) -> str:
@@ -488,6 +497,14 @@ class PromoteOtherRequest(BaseModel):
         ),
     )
 
+    is_global: bool = Field(
+        default=False,
+        description=(
+            "Whether a category made now is offered to every tracker. Left out, "
+            "it belongs to this entry's tracker only."
+        ),
+    )
+
     @field_validator("name", "subcategory_name")
     @classmethod
     def tidy_name(cls, value: str | None) -> str | None:
@@ -500,6 +517,8 @@ class PromoteOtherResponse(BaseModel):
     category_name: str
     # False when a category of that name already existed and was used instead.
     created: bool
+    # Whether it is offered to every tracker, or belongs to this one only.
+    is_global: bool
     # How many Others entries of that name moved into it.
     moved: int
 
@@ -516,6 +535,8 @@ class TransactionResponse(BaseModel):
     # Filled in for a subcategory, so the client can show "Bills › Electricity"
     # even when the parent is no longer switched on in this tracker.
     parent_category_name: str | None
+    # Whether that parent is offered to every tracker. Empty without a parent.
+    parent_category_is_global: bool | None = None
     description: str | None
     transaction_date: date
     created_at: datetime

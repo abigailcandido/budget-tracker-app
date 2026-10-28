@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.category_lookup import find_or_create_leaf, find_or_create_path
+from app.category_lookup import find_or_create_leaf, find_or_create_path, visible_in
 from app.deps import get_current_user, get_db
 from app.models import (
     CATEGORY_EXPENSE,
@@ -53,14 +53,24 @@ def _parents_with_children(user: User, db: Session) -> set[int]:
     }
 
 
-def _child_ids(category_id: int, user: User, db: Session) -> set[int]:
-    return {
-        row.id
-        for row in db.query(Category.id).filter(
-            Category.user_id == user.id,
-            Category.parent_id == category_id,
-        )
-    }
+def _child_ids(
+    category_id: int,
+    user: User,
+    db: Session,
+    tracker: MainTracker | None = None,
+) -> set[int]:
+    """A category's subcategories; with a tracker, only the ones it can see.
+
+    A subcategory made from an Others entry can belong to one tracker even
+    under a global parent, so another tracker must never switch it on.
+    """
+    query = db.query(Category.id).filter(
+        Category.user_id == user.id,
+        Category.parent_id == category_id,
+    )
+    if tracker is not None:
+        query = query.filter(visible_in(tracker))
+    return {row.id for row in query}
 
 
 def _to_response(category: Category, parents: set[int]) -> CategoryResponse:
@@ -117,19 +127,26 @@ def _reject_duplicate_name(
             )
     else:
         query = query.filter(Category.parent_id == parent_id)
+        if scope_tracker_id is not None:
+            query = query.filter(
+                or_(
+                    Category.main_tracker_id.is_(None),
+                    Category.main_tracker_id == scope_tracker_id,
+                )
+            )
 
     if exclude_id is not None:
         query = query.filter(Category.id != exclude_id)
 
-    if query.first() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "You already have a subcategory with this name here"
-                if parent_id is not None
-                else "You already have a category with this name"
-            ),
-        )
+    clash = query.first()
+    if clash is not None:
+        if clash.main_tracker_id is not None and clash.main_tracker_id != scope_tracker_id:
+            detail = "One of your trackers already has its own category with this name"
+        elif parent_id is not None:
+            detail = "You already have a subcategory with this name here"
+        else:
+            detail = "You already have a category with this name"
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
 
 def _reject_wrong_scope(category: Category, tracker: MainTracker) -> None:
@@ -626,7 +643,7 @@ def others_category(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Others goes under a top-level category, not under a subcategory",
             )
-        if not _child_ids(parent.id, user, db):
+        if not _child_ids(parent.id, user, db, tracker):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="This category has no subcategories. Choose Others at the top level instead",
@@ -681,14 +698,21 @@ def find_or_create_category(
         # A first sub-category would move everything filed directly under the
         # parent, which belongs on the Categories screen, not in the middle of
         # adding an entry.
-        if not _child_ids(parent.id, user, db):
+        if not _child_ids(parent.id, user, db, tracker):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="This category has no sub-categories. Add its first one from Categories",
             )
 
     category, _ = find_or_create_path(
-        payload.name, payload.kind, parent, payload.subcategory_name, tracker, user, db
+        payload.name,
+        payload.kind,
+        parent,
+        payload.subcategory_name,
+        tracker,
+        user,
+        db,
+        payload.is_global,
     )
     db.commit()
     db.refresh(category)
@@ -726,7 +750,7 @@ def enable_category(
     if category.parent_id is not None:
         ids.add(category.parent_id)
     else:
-        ids.update(_child_ids(category.id, user, db))
+        ids.update(_child_ids(category.id, user, db, tracker))
 
     _set_links(ids, tracker, db, enabled=True)
     db.commit()
@@ -750,12 +774,12 @@ def disable_category(
     ids = {category.id}
 
     if category.parent_id is None:
-        ids.update(_child_ids(category.id, user, db))
+        ids.update(_child_ids(category.id, user, db, tracker))
     else:
         # Switching off the last subcategory that was still on takes the parent
         # with it, for the same reason as above: a parent with nothing
         # choosable beneath it is a dead end rather than a useful heading.
-        siblings = _child_ids(category.parent_id, user, db)
+        siblings = _child_ids(category.parent_id, user, db, tracker)
         still_enabled = _enabled_ids(tracker, db) & siblings
         still_enabled.discard(category.id)
         if not still_enabled:

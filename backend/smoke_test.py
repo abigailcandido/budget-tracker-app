@@ -1041,6 +1041,15 @@ def main() -> None:
     )
     check("asking again gives the same one", id_of(again), id_of(others))
 
+    status, others_two = call(
+        "POST", f"/trackers/{two}/categories/others", token_a, {"kind": "expense"}
+    )
+    check(
+        "each tracker has an Others of its own",
+        ((others or {}).get("is_global"), id_of(others_two) not in (None, id_of(others))),
+        (False, True),
+    )
+
     status, under_bills = call(
         "POST", f"/trackers/{one}/categories/others", token_a, {"parent_id": bills["id"]}
     )
@@ -1284,6 +1293,78 @@ def main() -> None:
 
     status, _ = call("POST", make, token_a, {"name": "Garden", "subcategory_name": "OTHERS"})
     check("nor a new sub-category's", status, 422)
+
+    print("\nWhere new categories belong")
+    status, rows = call("GET", f"/trackers/{one}/categories", token_a)
+    by_name = {row["name"]: row for row in rows or []}
+    check(
+        "a category made from Others belongs to its tracker unless asked",
+        [by_name.get(name, {}).get("is_global") for name in ("Pet food", "Books", "Garden", "Seeds", "Wifi")],
+        [False] * 5,
+    )
+
+    status, rows = call("GET", f"/trackers/{two}/categories", token_a)
+    check(
+        "so another tracker never sees it",
+        sorted({"Pet food", "Books", "Wifi"} & set(names(rows))),
+        [],
+    )
+
+    check(
+        "an entry says whether its parent category is global",
+        (
+            (internet or {}).get("parent_category_is_global"),
+            (pet_one or {}).get("parent_category_is_global"),
+        ),
+        (True, None),
+    )
+
+    status, hobby = call("POST", "/transactions", token_a, {**pet, "other_name": "Hobby"})
+    status, promoted = call(
+        "POST", f"/transactions/{id_of(hobby)}/promote-other", token_a, {"is_global": True}
+    )
+    check(
+        "an Others entry can become a global category",
+        (status, (promoted or {}).get("is_global")),
+        (200, True),
+    )
+    status, rows = call("GET", f"/trackers/{two}/categories", token_a)
+    hobby_two = next((row for row in rows or [] if row["name"] == "Hobby"), {})
+    check(
+        "which every tracker is offered, switched on only where it was made",
+        (hobby_two.get("is_global"), hobby_two.get("is_enabled")),
+        (True, False),
+    )
+
+    status, tea = call("POST", make, token_a, {"name": "Tea", "is_global": True})
+    check("the add form can make a global category too", (tea or {}).get("is_global"), True)
+
+    status, _ = call(
+        "POST",
+        f"/trackers/{two}/categories/find-or-create",
+        token_a,
+        {"name": "Books", "is_global": True},
+    )
+    check("a global category cannot take a name another tracker keeps to itself", status, 409)
+
+    status, wifi_two = call(
+        "POST",
+        f"/trackers/{two}/categories/find-or-create",
+        token_a,
+        {"parent_id": bills["id"], "name": "Wifi"},
+    )
+    check(
+        "two trackers can each keep their own sub-category of the same name",
+        (status, id_of(wifi_two) not in (None, id_of(wifi))),
+        (200, True),
+    )
+
+    status, body = call("POST", "/categories", token_a, {"name": "wifi", "parent_id": bills["id"]})
+    check(
+        "a global sub-category cannot take a name a tracker keeps to itself",
+        (status, (body or {}).get("detail")),
+        (409, "One of your trackers already has its own category with this name"),
+    )
 
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)

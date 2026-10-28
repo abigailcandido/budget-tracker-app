@@ -284,6 +284,9 @@ def _to_response(
         category_id=category.id if category is not None else None,
         category_name=category.name if category is not None else None,
         parent_category_name=parent.name if parent is not None else None,
+        parent_category_is_global=(
+            parent.main_tracker_id is None if parent is not None else None
+        ),
         description=transaction.description,
         transaction_date=transaction.transaction_date,
         created_at=transaction.created_at,
@@ -929,9 +932,17 @@ def promote_other(
 
     # Under Others at the top level, the new category is top-level too, with
     # its own sub-category if one was asked for; under "Bills › Others", it
-    # becomes another of Bills' subcategories.
+    # becomes another of Bills' subcategories. Either way it belongs to this
+    # tracker unless the user asked for it to be global.
     target, created = find_or_create_path(
-        name, others.kind, parent, payload.subcategory_name, tracker, user, db
+        name,
+        others.kind,
+        parent,
+        payload.subcategory_name,
+        tracker,
+        user,
+        db,
+        payload.is_global,
     )
     target_parent = db.get(Category, target.parent_id) if target.parent_id is not None else None
     label = f"{target_parent.name} › {target.name}" if target_parent is not None else target.name
@@ -997,5 +1008,6 @@ def promote_other(
         category_id=target.id,
         category_name=label,
         created=created,
+        is_global=target.main_tracker_id is None,
         moved=moved,
     )
