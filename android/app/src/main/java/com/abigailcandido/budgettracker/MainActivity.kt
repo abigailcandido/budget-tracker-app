@@ -149,6 +149,7 @@ class MainActivity : ComponentActivity() {
                         walletRepository = walletRepository,
                         categoryRepository = categoryRepository,
                         transactionRepository = transactionRepository,
+                        budgetRepository = budgetRepository,
                         onSignOut = signOut,
                     )
                 }
@@ -172,6 +173,7 @@ private fun SignedInNavHost(
     walletRepository: WalletRepository,
     categoryRepository: CategoryRepository,
     transactionRepository: TransactionRepository,
+    budgetRepository: BudgetRepository,
     onSignOut: () -> Unit,
 ) {
     val navController = rememberNavController()
