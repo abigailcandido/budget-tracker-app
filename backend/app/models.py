@@ -175,14 +175,39 @@ class Transaction(Base):
 
 
 class BudgetLimit(Base):
+    """A category's expected amount per month in one tracker, from a month on.
+
+    Set once, an amount carries over to every later month until the next row
+    for the same tracker, category and currency starts. An empty amount from a
+    month on means the expected amount was cleared then. Only categories
+    without subcategories, and subcategories, have rows; a parent's figure is
+    the sum of its subcategories'.
+    """
+
     __tablename__ = "budget_limits"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    main_tracker_id: Mapped[int] = mapped_column(ForeignKey("main_trackers.id"), index=True)
     category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), index=True)
-    monthly_limit: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    # Amounts in different currencies are never added together, so a tracker
+    # with peso and dollar wallets keeps a separate expected amount for each.
+    currency: Mapped[str] = mapped_column(String(3))
+    # Always the first day of a month.
+    starts_on: Mapped[date] = mapped_column(Date)
+    monthly_limit: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
     warning_threshold_percent: Mapped[int] = mapped_column(default=80)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "main_tracker_id",
+            "category_id",
+            "currency",
+            "starts_on",
+            name="uq_budget_limits_tracker_category_currency_month",
+        ),
+    )
 
 
 class ExchangeRate(Base):

@@ -1423,6 +1423,273 @@ def main() -> None:
         (200, "Travel › Flights", True),
     )
 
+    print("\nBudget")
+    status, budgets = call("POST", "/trackers", token_a, {"name": "Budgets"})
+    three = id_of(budgets)
+    status, purse = call(
+        "POST", f"/trackers/{three}/wallets", token_a, {"name": "Purse", "currency": "PHP"}
+    )
+    status, dollars = call(
+        "POST", f"/trackers/{three}/wallets", token_a, {"name": "Dollars", "currency": "USD"}
+    )
+    status, allowance = call("POST", "/categories", token_a, {"name": "Allowance", "kind": "income"})
+    budget_path = f"/trackers/{three}/budget"
+
+    def budget(start, end, currency=None):
+        path = f"{budget_path}?start_date={start}&end_date={end}"
+        if currency:
+            path += f"&currency={currency}"
+        return call("GET", path, token_a)[1] or {}
+
+    def budget_row(body, kind, name, parent=None):
+        rows = body.get(kind, {}).get("rows", [])
+        if parent is not None:
+            rows = next((row["subcategories"] for row in rows if row["name"] == parent), [])
+        return next((row for row in rows if row["name"] == name), {})
+
+    def set_expected(category, starts_on, amount, currency="PHP", tracker=None, token=None):
+        body = {"currency": currency, "starts_on": starts_on}
+        if amount is not None:
+            body["amount"] = amount
+        return call(
+            "PUT",
+            f"/trackers/{tracker or three}/budget/{id_of(category)}",
+            token or token_a,
+            body,
+        )
+
+    body = budget("2025-01-01", "2025-01-31")
+    check(
+        "a budget names its currency and offers the tracker's others",
+        (body.get("currency"), body.get("currencies")),
+        ("PHP", ["PHP", "USD"]),
+    )
+    food = budget_row(body, "expense", "Groceries")
+    check(
+        "a category starts with no expected amount",
+        (food.get("expected"), food.get("actual"), food.get("difference")),
+        (None, "0.00", None),
+    )
+
+    status, saved = set_expected(groceries, "2025-01-15", "3100.00")
+    check(
+        "an expected amount is set from the month its date falls in",
+        (status, (saved or {}).get("starts_on"), (saved or {}).get("amount")),
+        (200, "2025-01-01", "3100.00"),
+    )
+
+    shopping_trip = {"wallet_id": id_of(purse), "type": "expense", "category_id": id_of(groceries)}
+    status, jan_food = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {**shopping_trip, "amount": "1000.00", "transaction_date": "2025-01-10"},
+    )
+    status, feb_food = call(
+        "POST",
+        "/transactions",
+        token_a,
+        {**shopping_trip, "amount": "500.00", "transaction_date": "2025-02-03"},
+    )
+    call(
+        "POST",
+        "/transactions",
+        token_a,
+        {
+            **shopping_trip,
+            "wallet_id": id_of(dollars),
+            "amount": "20.00",
+            "transaction_date": "2025-01-12",
+        },
+    )
+
+    food = budget_row(budget("2025-01-01", "2025-01-31"), "expense", "Groceries")
+    check(
+        "actual is what was spent in the dates, in that currency",
+        (food.get("expected"), food.get("actual"), food.get("difference")),
+        ("3100.00", "1000.00", "2100.00"),
+    )
+    check(
+        "the amount carries over to later months",
+        budget_row(budget("2025-02-01", "2025-02-28"), "expense", "Groceries").get("expected"),
+        "3100.00",
+    )
+    check(
+        "a week gets its share of the month by days",
+        budget_row(budget("2025-02-03", "2025-02-09"), "expense", "Groceries").get("expected"),
+        "775.00",
+    )
+    check(
+        "dates across two months add each month's share",
+        budget_row(budget("2025-01-25", "2025-02-07"), "expense", "Groceries").get("expected"),
+        "1475.00",
+    )
+
+    set_expected(groceries, "2025-02-01", "2800.00")
+    check(
+        "a change applies from its month, and earlier months keep theirs",
+        (
+            budget_row(budget("2025-01-01", "2025-01-31"), "expense", "Groceries").get("expected"),
+            budget_row(budget("2025-02-01", "2025-02-28"), "expense", "Groceries").get("expected"),
+        ),
+        ("3100.00", "2800.00"),
+    )
+    check(
+        "a year adds up every month's amount",
+        budget_row(budget("2025-01-01", "2025-12-31"), "expense", "Groceries").get("expected"),
+        "33900.00",
+    )
+
+    body = budget("2025-01-01", "2025-01-31", "USD")
+    usd_food = budget_row(body, "expense", "Groceries")
+    check(
+        "each currency has its own expected and actual amounts",
+        (body.get("currency"), usd_food.get("expected"), usd_food.get("actual")),
+        ("USD", None, "20.00"),
+    )
+    check(
+        "a currency no wallet uses falls back to the main one",
+        budget("2025-01-01", "2025-01-31", "EUR").get("currency"),
+        "PHP",
+    )
+
+    set_expected(electricity, "2025-01-01", "1500.00")
+    body = budget("2025-01-01", "2025-01-31")
+    bills_row = budget_row(body, "expense", "Bills")
+    check(
+        "a category with subcategories adds theirs up",
+        (
+            bills_row.get("expected"),
+            budget_row(body, "expense", "Electricity", parent="Bills").get("expected"),
+            bills_row.get("amounts"),
+        ),
+        ("1500.00", "1500.00", []),
+    )
+    total = body.get("expense", {}).get("total", {})
+    check(
+        "the table's total adds up its rows",
+        (total.get("expected"), total.get("actual"), total.get("difference")),
+        ("4600.00", "1000.00", "3600.00"),
+    )
+    status, _ = set_expected(bills, "2025-01-01", "100.00")
+    check("a category with subcategories cannot have an amount of its own", status, 409)
+
+    call("PATCH", f"/transactions/{id_of(jan_food)}", token_a, {"amount": "1200.00"})
+    delete_entry(id_of(feb_food))
+    check(
+        "actual follows corrections and deletions",
+        (
+            budget_row(budget("2025-01-01", "2025-01-31"), "expense", "Groceries").get("actual"),
+            budget_row(budget("2025-02-01", "2025-02-28"), "expense", "Groceries").get("actual"),
+        ),
+        ("1200.00", "0.00"),
+    )
+
+    call(
+        "POST",
+        "/transactions",
+        token_a,
+        {**shopping_trip, "amount": "3000.00", "transaction_date": "2025-01-20"},
+    )
+    food = budget_row(budget("2025-01-01", "2025-01-31"), "expense", "Groceries")
+    check(
+        "spending more than expected puts the difference below zero",
+        (food.get("actual"), food.get("difference")),
+        ("4200.00", "-1100.00"),
+    )
+
+    set_expected(allowance, "2025-01-01", "20000.00")
+    call(
+        "POST",
+        "/transactions",
+        token_a,
+        {
+            "wallet_id": id_of(purse),
+            "type": "income",
+            "category_id": id_of(allowance),
+            "amount": "25000.00",
+            "transaction_date": "2025-01-31",
+        },
+    )
+    received = budget_row(budget("2025-01-01", "2025-01-31"), "income", "Allowance")
+    check(
+        "for income, the difference is what came in over what was expected",
+        (received.get("expected"), received.get("actual"), received.get("difference")),
+        ("20000.00", "25000.00", "5000.00"),
+    )
+
+    status, _ = set_expected(groceries, "2025-03-15", None)
+    march = budget("2025-03-01", "2025-03-31")
+    check(
+        "an expected amount can be cleared from a month on",
+        (
+            budget_row(march, "expense", "Groceries").get("expected"),
+            budget_row(budget("2025-02-01", "2025-02-28"), "expense", "Groceries").get("expected"),
+        ),
+        (None, "2800.00"),
+    )
+    check(
+        "every change is listed, oldest first",
+        [
+            (change["starts_on"], change["amount"])
+            for change in budget_row(march, "expense", "Groceries").get("amounts", [])
+        ],
+        [("2025-01-01", "3100.00"), ("2025-02-01", "2800.00"), ("2025-03-01", None)],
+    )
+
+    status, _ = set_expected(groceries, "2025-01-01", "-5.00")
+    check("an expected amount cannot be below zero", status, 422)
+    status, _ = set_expected(groceries, "2025-01-01", "10.00", currency="EUR")
+    check("nor in a currency none of the tracker's wallets use", status, 409)
+    status, _ = set_expected(wifi, "2025-01-01", "10.00")
+    check("nor for a category another tracker keeps to itself", status, 409)
+    status, _ = call("GET", f"{budget_path}?start_date=2025-02-01&end_date=2025-01-01", token_a)
+    check("a budget's dates cannot run backwards", status, 422)
+
+    call("DELETE", f"/trackers/{three}/categories/{water['id']}", token_a)
+    check(
+        "a switched-off category with nothing in the dates is left out",
+        budget_row(budget("2025-01-01", "2025-01-31"), "expense", "Water", parent="Bills"),
+        {},
+    )
+
+    status, plants = call("POST", "/categories", token_a, {"name": "Plants"})
+    set_expected(plants, "2025-01-01", "300.00")
+    call("POST", "/categories", token_a, {"name": "Tools", "parent_id": id_of(plants)})
+    body = budget("2025-01-01", "2025-01-31")
+    general = budget_row(body, "expense", "General", parent="Plants")
+    check(
+        "a category's first subcategory moves its expected amount into General",
+        (general.get("expected"), budget_row(body, "expense", "Plants").get("expected")),
+        ("300.00", "300.00"),
+    )
+    status, _ = call("DELETE", f"/categories/{general.get('category_id')}", token_a)
+    check("a category with expected amounts can still be deleted", status, 204)
+
+    status, short_lived = call(
+        "POST", "/trackers", token_a, {"name": "Short-lived", "category_ids": []}
+    )
+    status, tin = call(
+        "POST", f"/trackers/{id_of(short_lived)}/wallets", token_a, {"name": "Tin", "currency": "PHP"}
+    )
+    status, _ = set_expected(groceries, "2025-01-01", "50.00", tracker=id_of(short_lived))
+    check(
+        "each tracker keeps its own expected amounts",
+        (
+            status,
+            budget_row(budget("2025-01-01", "2025-01-31"), "expense", "Groceries").get("expected"),
+        ),
+        (200, "3100.00"),
+    )
+    call("DELETE", f"/wallets/{id_of(tin)}", token_a)
+    status, _ = call("DELETE", f"/trackers/{id_of(short_lived)}", token_a)
+    check("a tracker with expected amounts can still be deleted", status, 204)
+
+    status, _ = call("GET", f"{budget_path}?start_date=2025-01-01&end_date=2025-01-31", token_b)
+    check("another account's budget is not found", status, 404)
+    status, _ = set_expected(groceries, "2025-01-01", "1.00", token=token_b)
+    check("another account cannot set an expected amount", status, 404)
+    
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)
     check("another account's tracker is not found", status, 404)

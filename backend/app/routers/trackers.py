@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
 from app.models import (
+    BudgetLimit,
     Category,
     MainTracker,
     SavingsTrackerLink,
@@ -212,10 +213,12 @@ def delete_tracker(
         )
 
     # Category switches are bookkeeping rather than user data, so they are
-    # cleared automatically rather than blocking the delete.
+    # cleared automatically rather than blocking the delete. Expected amounts
+    # belong to this tracker alone, so they go with it too.
     db.query(TrackerCategory).filter(
         TrackerCategory.main_tracker_id == tracker.id
     ).delete()
+    db.query(BudgetLimit).filter(BudgetLimit.main_tracker_id == tracker.id).delete()
 
     db.delete(tracker)
     db.commit()

@@ -612,3 +612,87 @@ class TrackerSummaryResponse(BaseModel):
     end_date: date
     wallets: list[WalletSummaryResponse]
     totals: list[CurrencyTotalResponse]
+
+
+# --------------------------------------------------------------------------
+# Expected amounts and the Budget tab
+# --------------------------------------------------------------------------
+
+
+class ExpectedAmountRequest(BaseModel):
+    currency: str = Field(pattern=CURRENCY_PATTERN)
+    starts_on: date = Field(
+        description=(
+            "Any day of the first month the amount is for. It applies from that "
+            "month on, until a later change."
+        ),
+    )
+    amount: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=AMOUNT_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description=(
+            "The amount expected each month. Leave it out to clear the expected "
+            "amount from that month on."
+        ),
+    )
+
+    @field_validator("currency")
+    @classmethod
+    def normalise_currency(cls, value: str) -> str:
+        return value.upper()
+
+    @field_validator("starts_on")
+    @classmethod
+    def first_day_of_month(cls, value: date) -> date:
+        return value.replace(day=1)
+
+
+class ExpectedAmountResponse(BaseModel):
+    category_id: int
+    currency: str
+    # The first day of the month it applies from.
+    starts_on: date
+    # Empty when the expected amount was cleared from that month on.
+    amount: str | None
+
+
+class BudgetRowResponse(BaseModel):
+    category_id: int
+    name: str
+    is_enabled: bool
+    # Each month's amount, shared out by days when the dates cover only part
+    # of a month. Empty when no month in the dates has one.
+    expected: str | None
+    actual: str
+    # Expected minus actual for expenses, actual minus expected for income, so
+    # below zero is always the bad side. Empty without an expected amount.
+    difference: str | None
+    # Every change to the monthly amount, oldest first. Empty for a category
+    # with subcategories, whose figures are theirs added up.
+    amounts: list[ExpectedAmountResponse] = []
+    subcategories: list["BudgetRowResponse"] = []
+
+
+class BudgetTotalResponse(BaseModel):
+    expected: str | None
+    actual: str
+    difference: str | None
+
+
+class BudgetTableResponse(BaseModel):
+    kind: CategoryKind
+    rows: list[BudgetRowResponse]
+    total: BudgetTotalResponse
+
+
+class BudgetResponse(BaseModel):
+    start_date: date
+    end_date: date
+    # The currency every figure is in. Empty for a tracker with no wallets.
+    currency: str | None
+    # The currencies the tracker's wallets use, the most used first.
+    currencies: list[str]
+    expense: BudgetTableResponse
+    income: BudgetTableResponse

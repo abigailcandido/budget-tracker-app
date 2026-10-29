@@ -216,6 +216,8 @@ def _rehome_direct_records(parent: Category, user: User, db: Session) -> None:
 
     Creating a "General" child and moving those records into it keeps every
     record filed, every total identical, and needs nothing from the user.
+    Expected amounts move with them, so the family's expected total stays the
+    same too.
     """
     already_has_children = (
         db.query(Category.id).filter(Category.parent_id == parent.id).first() is not None
@@ -235,7 +237,13 @@ def _rehome_direct_records(parent: Category, user: User, db: Session) -> None:
         .first()
         is not None
     )
-    if not has_transactions and not has_rules:
+    has_expected_amounts = (
+        db.query(BudgetLimit.id)
+        .filter(BudgetLimit.category_id == parent.id)
+        .first()
+        is not None
+    )
+    if not has_transactions and not has_rules and not has_expected_amounts:
         return
 
     general = Category(
@@ -271,9 +279,11 @@ def _rehome_direct_records(parent: Category, user: User, db: Session) -> None:
         {RecurringRule.category_id: general.id}, synchronize_session=False
     )
 
-    # A budget limit on the parent deliberately stays where it is: a limit on
-    # "Bills" is meant to cover the whole family, not follow the records down
-    # into one child.
+    # Expected amounts are set on leaves only, and a parent's is the sum of
+    # its subcategories', so the parent's own amounts move down to General.
+    db.query(BudgetLimit).filter(BudgetLimit.category_id == parent.id).update(
+        {BudgetLimit.category_id: general.id}, synchronize_session=False
+    )
 
 def _resolve_link_targets(
     tracker_ids: list[int] | None,
@@ -549,11 +559,9 @@ def delete_category(
             detail="A recurring rule uses this category, so it cannot be deleted",
         )
 
-    if db.query(BudgetLimit.id).filter(BudgetLimit.category_id == category.id).first():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Remove this category's budget limit before deleting it",
-        )
+    # Expected amounts are plans, not records, so they go with the category,
+    # the same way its switches do.
+    db.query(BudgetLimit).filter(BudgetLimit.category_id == category.id).delete()
 
     db.query(TrackerCategory).filter(
         TrackerCategory.category_id == category.id
