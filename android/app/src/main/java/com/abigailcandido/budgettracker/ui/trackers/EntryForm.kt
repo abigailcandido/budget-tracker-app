@@ -91,10 +91,16 @@ data class EntryForm(
     /** That sub-category's name, such as "Food" under a new "Pets". */
     val subcategoryName: String = "",
     /**
-     * The "Also add to global categories" switch. Off, whatever is made belongs
-     * to this tracker only; on, it is offered to every tracker.
+     * The "Also add to global categories" switch. Off, the new category
+     * belongs to this tracker only; on, it is offered to every tracker.
      */
     val addAsGlobal: Boolean = false,
+    /**
+     * The "Add to global sub-categories" switch, for the new sub-category. It
+     * only counts while the new category is global: a category kept to this
+     * tracker can only hold sub-categories kept to this tracker.
+     */
+    val addSubcategoryAsGlobal: Boolean = false,
     /**
      * The category the entry had when the page opened. It stays on offer even
      * if it has since been switched off, so correcting an old amount never
@@ -151,7 +157,8 @@ data class EntryForm(
     val isMakingCategory: Boolean
         get() = isOthersChosen && addToCategories
 
-    private val isMakingSubcategory: Boolean
+    /** Whether the new category holds a new sub-category too. */
+    val isMakingSubcategory: Boolean
         get() = isMakingCategory && canHaveSubcategory && withSubcategory
 
     /**
@@ -165,6 +172,13 @@ data class EntryForm(
     /** Whether the switch is on where it applies. */
     val isMakingGlobal: Boolean
         get() = canAddAsGlobal && addAsGlobal
+
+    /** The new sub-category may be global only when its new category is. */
+    val canAddSubcategoryAsGlobal: Boolean
+        get() = isMakingSubcategory && isMakingGlobal
+
+    val isMakingGlobalSubcategory: Boolean
+        get() = canAddSubcategoryAsGlobal && addSubcategoryAsGlobal
 
     /**
      * The category the entry will be saved under when "Add to my categories"
@@ -269,6 +283,28 @@ data class EntryForm(
 
 /** Whether a category is an Others bucket, whatever capitals it was given. */
 fun isOthersName(name: String): Boolean = name.trim().equals(OTHERS_LABEL, ignoreCase = true)
+
+/** Under a switch for a global sub-category that cannot be turned on. */
+const val GLOBAL_SUBCATEGORY_NOTE = "Only a global category can have global sub-categories."
+
+/**
+ * Which trackers a category made from an Others name is offered to, as a
+ * sentence. With a sub-category the two can differ: a global category can
+ * hold a sub-category kept to this tracker.
+ */
+fun scopeSentence(
+    name: String,
+    subcategoryName: String?,
+    isGlobal: Boolean,
+    subcategoryIsGlobal: Boolean,
+): String {
+    val subName = subcategoryName?.trim().orEmpty()
+    return when {
+        !isGlobal -> "For this tracker only."
+        subName.isEmpty() || subcategoryIsGlobal -> "Offered to all your trackers."
+        else -> "${name.trim()} is offered to all your trackers, $subName is for this tracker only."
+    }
+}
 
 /**
  * Turns a tracker's categories into the two pickers' choices. Others buckets

@@ -406,6 +406,7 @@ private fun SignedInNavHost(
                     onPromoteWithSubcategoryChange = trackerViewModel::onPromoteWithSubcategoryChange,
                     onPromoteSubcategoryNameChange = trackerViewModel::onPromoteSubcategoryNameChange,
                     onPromoteAsGlobalChange = trackerViewModel::onPromoteAsGlobalChange,
+                    onPromoteSubcategoryAsGlobalChange = trackerViewModel::onPromoteSubcategoryAsGlobalChange,
                     onConfirmPromote = trackerViewModel::confirmPromote,
                     onDismissPromote = trackerViewModel::onDismissPromote,
                 )
@@ -453,6 +454,7 @@ private fun SignedInNavHost(
                     onWithSubcategoryChange = trackerViewModel::onWithSubcategoryChange,
                     onSubcategoryNameChange = trackerViewModel::onSubcategoryNameChange,
                     onAddAsGlobalChange = trackerViewModel::onAddAsGlobalChange,
+                    onAddSubcategoryAsGlobalChange = trackerViewModel::onAddSubcategoryAsGlobalChange,
                     onAmountChange = trackerViewModel::onEntryAmountChange,
                     onDateChange = trackerViewModel::onEntryDateChange,
                     onNoteChange = trackerViewModel::onEntryNoteChange,

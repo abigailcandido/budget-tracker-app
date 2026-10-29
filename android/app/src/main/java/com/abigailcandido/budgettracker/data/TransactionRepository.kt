@@ -124,12 +124,18 @@ class TransactionRepository(
         name: String?,
         subcategoryName: String?,
         isGlobal: Boolean,
+        subcategoryIsGlobal: Boolean,
     ): ApiResult<PromoteOtherResponse> =
         tokenStore.withToken { token ->
             api.promoteOther(
                 token,
                 transactionId,
-                PromoteOtherRequest(name.cleaned(), subcategoryName.cleaned(), isGlobal),
+                PromoteOtherRequest(
+                    name.cleaned(),
+                    subcategoryName.cleaned(),
+                    isGlobal,
+                    subcategoryIsGlobal,
+                ),
             )
         }
 

@@ -27,6 +27,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.abigailcandido.budgettracker.ui.common.AppVersionText
 
 @Composable
 fun AuthScreen(
@@ -194,5 +195,8 @@ fun AuthScreen(
                 Text("Back to sign in")
             }
         }
+
+        Spacer(Modifier.height(24.dp))
+        AppVersionText()
     }
 }

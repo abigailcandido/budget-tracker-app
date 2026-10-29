@@ -49,6 +49,7 @@ data class EntryDetailState(
     val promoteWithSubcategory: Boolean = false,
     val promoteSubcategoryName: String = "",
     val promoteAsGlobal: Boolean = false,
+    val promoteSubcategoryAsGlobal: Boolean = false,
     val isPromoting: Boolean = false,
     val promoteError: String? = null,
 ) {
@@ -80,6 +81,17 @@ data class EntryDetailState(
      */
     val canPromoteAsGlobal: Boolean
         get() = entry.parentCategoryName == null || entry.parentCategoryIsGlobal == true
+
+    /** Whether the switch is on where it applies. */
+    val isPromotingGlobal: Boolean
+        get() = canPromoteAsGlobal && promoteAsGlobal
+
+    /** A new sub-category may be global only when its new category is. */
+    val canPromoteSubcategoryAsGlobal: Boolean
+        get() = canPromoteWithSubcategory && promoteWithSubcategory && isPromotingGlobal
+
+    val isPromotingGlobalSubcategory: Boolean
+        get() = canPromoteSubcategoryAsGlobal && promoteSubcategoryAsGlobal
 
     /** The reversal that deleted the entry, once the history has arrived. */
     val deletion: TransactionResponse?

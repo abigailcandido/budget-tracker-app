@@ -26,6 +26,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.abigailcandido.budgettracker.ui.common.AppVersionText
 
 @Composable
 fun PinSetupScreen(
@@ -118,6 +119,9 @@ fun PinSetupScreen(
         TextButton(onClick = onSignOut, enabled = !state.isSubmitting) {
             Text("Sign out instead")
         }
+
+        Spacer(Modifier.height(24.dp))
+        AppVersionText()
     }
 }
 
@@ -198,6 +202,9 @@ fun PinEntryScreen(
         TextButton(onClick = onSignOut, enabled = !state.isSubmitting) {
             Text("Sign out")
         }
+
+        Spacer(Modifier.height(24.dp))
+        AppVersionText()
     }
 }
 

@@ -22,6 +22,7 @@ import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -64,6 +65,7 @@ fun EntryEditScreen(
     onWithSubcategoryChange: (Boolean) -> Unit,
     onSubcategoryNameChange: (String) -> Unit,
     onAddAsGlobalChange: (Boolean) -> Unit,
+    onAddSubcategoryAsGlobalChange: (Boolean) -> Unit,
     onAmountChange: (String) -> Unit,
     onDateChange: (LocalDate) -> Unit,
     onNoteChange: (String) -> Unit,
@@ -199,6 +201,7 @@ fun EntryEditScreen(
                     onWithSubcategoryChange = onWithSubcategoryChange,
                     onSubcategoryNameChange = onSubcategoryNameChange,
                     onAddAsGlobalChange = onAddAsGlobalChange,
+                    onAddSubcategoryAsGlobalChange = onAddSubcategoryAsGlobalChange,
                     onRetry = onRetryCategories,
                 )
             }
@@ -315,6 +318,7 @@ private fun CategorySection(
     onWithSubcategoryChange: (Boolean) -> Unit,
     onSubcategoryNameChange: (String) -> Unit,
     onAddAsGlobalChange: (Boolean) -> Unit,
+    onAddSubcategoryAsGlobalChange: (Boolean) -> Unit,
     onRetry: () -> Unit,
 ) {
     val kindWord = if (form.type == EntryType.Income) "income" else "expense"
@@ -380,6 +384,7 @@ private fun CategorySection(
                     onWithSubcategoryChange = onWithSubcategoryChange,
                     onSubcategoryNameChange = onSubcategoryNameChange,
                     onAddAsGlobalChange = onAddAsGlobalChange,
+                    onAddSubcategoryAsGlobalChange = onAddSubcategoryAsGlobalChange,
                 )
             }
         }
@@ -401,6 +406,7 @@ private fun OtherNameField(
     onWithSubcategoryChange: (Boolean) -> Unit,
     onSubcategoryNameChange: (String) -> Unit,
     onAddAsGlobalChange: (Boolean) -> Unit,
+    onAddSubcategoryAsGlobalChange: (Boolean) -> Unit,
 ) {
     // Nothing is called a problem until something has been typed.
     val problem = form.otherNameProblem.takeIf { form.otherName.isNotBlank() }
@@ -422,10 +428,14 @@ private fun OtherNameField(
                 Text(
                     when {
                         problem != null -> problem
-                        newCategory != null && form.isMakingGlobal ->
-                            "Saved under a category of its own: $newCategory, offered to all your trackers."
                         newCategory != null ->
-                            "Saved under a category of its own: $newCategory, for this tracker only."
+                            "Saved under a category of its own: $newCategory. " + scopeSentence(
+                                name = form.otherName,
+                                subcategoryName = form.subcategoryName
+                                    .takeIf { form.isMakingSubcategory },
+                                isGlobal = form.isMakingGlobal,
+                                subcategoryIsGlobal = form.isMakingGlobalSubcategory,
+                            )
                         form.addToCategories -> "Saved under a category of its own."
                         else -> "Saved under Others. You can add it to your categories " +
                                 "later, from its details."
@@ -448,16 +458,32 @@ private fun OtherNameField(
             onCheckedChange = onAddToCategoriesChange,
         )
 
-        // Only a new top-level category can hold a sub-category; one under
-        // "Bills › Others" is a sub-category already.
-        if (form.addToCategories && form.canHaveSubcategory) {
+        if (form.addToCategories) {
+            // Under "Bills › Others" the new category is one of Bills'
+            // sub-categories, which can be global only when Bills is.
             SwitchRow(
-                label = "Give it a sub-category",
-                checked = form.withSubcategory,
-                enabled = !form.isBusy,
-                onCheckedChange = onWithSubcategoryChange,
+                label = if (form.canHaveSubcategory) {
+                    "Also add to global categories"
+                } else {
+                    "Also add to global sub-categories"
+                },
+                checked = form.isMakingGlobal,
+                enabled = !form.isBusy && form.canAddAsGlobal,
+                onCheckedChange = onAddAsGlobalChange,
+                note = GLOBAL_SUBCATEGORY_NOTE.takeIf { !form.canAddAsGlobal },
             )
-            if (form.withSubcategory) {
+
+            // Only a new top-level category can hold a sub-category; one under
+            // "Bills › Others" is a sub-category already.
+            if (form.canHaveSubcategory) {
+                SwitchRow(
+                    label = "Give it a sub-category",
+                    checked = form.withSubcategory,
+                    enabled = !form.isBusy,
+                    onCheckedChange = onWithSubcategoryChange,
+                )
+            }
+            if (form.isMakingSubcategory) {
                 val subProblem = form.subcategoryNameProblem
                     .takeIf { form.subcategoryName.isNotBlank() }
                 OutlinedTextField(
@@ -478,45 +504,56 @@ private fun OtherNameField(
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                SwitchRow(
+                    label = "Add to global sub-categories",
+                    checked = form.isMakingGlobalSubcategory,
+                    enabled = !form.isBusy && form.canAddSubcategoryAsGlobal,
+                    onCheckedChange = onAddSubcategoryAsGlobalChange,
+                    note = GLOBAL_SUBCATEGORY_NOTE.takeIf { !form.canAddSubcategoryAsGlobal },
+                )
             }
-        }
-
-        // At the top level, or under a global category. Under a category that
-        // belongs to this tracker, the new sub-category always does too.
-        if (form.canAddAsGlobal) {
-            SwitchRow(
-                label = "Also add to global categories",
-                checked = form.addAsGlobal,
-                enabled = !form.isBusy,
-                onCheckedChange = onAddAsGlobalChange,
-            )
         }
     }
 }
 
-/** A label with an on/off switch at the end of the row. */
+/**
+ * A label with an on/off switch at the end of the row. A switch that cannot
+ * be turned on is greyed out, with a note under it saying why.
+ */
 @Composable
 private fun SwitchRow(
     label: String,
     checked: Boolean,
     enabled: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    note: String? = null,
 ) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.weight(1f),
-        )
-        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = LocalContentColor.current.copy(alpha = if (enabled) 1f else 0.38f),
+                modifier = Modifier.weight(1f),
+            )
+            Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        }
+        if (note != null) {
+            Text(
+                text = note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
-
 /** A field that looks like the others but opens a chooser when tapped. */
 @Composable
 private fun PickerField(

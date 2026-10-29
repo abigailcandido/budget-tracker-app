@@ -111,6 +111,7 @@ class CategoryRepository(
         name: String,
         subcategoryName: String?,
         isGlobal: Boolean,
+        subcategoryIsGlobal: Boolean,
     ): ApiResult<TrackerCategoryResponse> =
         tokenStore.withToken { token ->
             api.findOrCreate(
@@ -122,6 +123,7 @@ class CategoryRepository(
                     name = name.trim(),
                     subcategoryName = subcategoryName?.trim()?.takeIf { it.isNotEmpty() },
                     isGlobal = isGlobal,
+                    subcategoryIsGlobal = subcategoryIsGlobal,
                 ),
             )
         }

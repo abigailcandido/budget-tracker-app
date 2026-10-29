@@ -22,6 +22,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -78,6 +79,7 @@ fun EntryDetailScreen(
     onPromoteWithSubcategoryChange: (Boolean) -> Unit,
     onPromoteSubcategoryNameChange: (String) -> Unit,
     onPromoteAsGlobalChange: (Boolean) -> Unit,
+    onPromoteSubcategoryAsGlobalChange: (Boolean) -> Unit,
     onConfirmPromote: () -> Unit,
     onDismissPromote: () -> Unit,
     modifier: Modifier = Modifier,
@@ -245,6 +247,7 @@ fun EntryDetailScreen(
             onWithSubcategoryChange = onPromoteWithSubcategoryChange,
             onSubcategoryNameChange = onPromoteSubcategoryNameChange,
             onAsGlobalChange = onPromoteAsGlobalChange,
+            onSubcategoryAsGlobalChange = onPromoteSubcategoryAsGlobalChange,
             onConfirm = onConfirmPromote,
             onDismiss = onDismissPromote,
         )
@@ -423,7 +426,8 @@ private fun RestoreDialog(
  * entry was called and can be changed. Under the top-level Others, the new
  * category can hold a sub-category too. If a category with that name already
  * exists at the same level, in any mix of capitals, the entries go there and
- * no second one is made.
+ * no second one is made. The switches decide which trackers the new category,
+ * and its sub-category, are offered to.
  */
 @Composable
 private fun PromoteDialog(
@@ -432,6 +436,7 @@ private fun PromoteDialog(
     onWithSubcategoryChange: (Boolean) -> Unit,
     onSubcategoryNameChange: (String) -> Unit,
     onAsGlobalChange: (Boolean) -> Unit,
+    onSubcategoryAsGlobalChange: (Boolean) -> Unit,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -446,7 +451,12 @@ private fun PromoteDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add to categories") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Scrolls, since it can be taller than a small screen once the
+            // sub-category and its switch are showing.
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 Text(
                     text = (if (parent != null) {
                         "This becomes a sub-category of $parent. "
@@ -472,22 +482,26 @@ private fun PromoteDialog(
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                // Under "Bills › Others" the new category is one of Bills'
+                // sub-categories, which can be global only when Bills is.
+                DialogSwitchRow(
+                    label = if (parent != null) {
+                        "Also add to global sub-categories"
+                    } else {
+                        "Also add to global categories"
+                    },
+                    checked = detail.isPromotingGlobal,
+                    enabled = !detail.isPromoting && detail.canPromoteAsGlobal,
+                    onCheckedChange = onAsGlobalChange,
+                    note = GLOBAL_SUBCATEGORY_NOTE.takeIf { !detail.canPromoteAsGlobal },
+                )
                 if (detail.canPromoteWithSubcategory) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "Give it a sub-category",
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Switch(
-                            checked = detail.promoteWithSubcategory,
-                            onCheckedChange = onWithSubcategoryChange,
-                            enabled = !detail.isPromoting,
-                        )
-                    }
+                    DialogSwitchRow(
+                        label = "Give it a sub-category",
+                        checked = detail.promoteWithSubcategory,
+                        enabled = !detail.isPromoting,
+                        onCheckedChange = onWithSubcategoryChange,
+                    )
                 }
                 if (showsSubcategory) {
                     OutlinedTextField(
@@ -508,34 +522,24 @@ private fun PromoteDialog(
                         ),
                         modifier = Modifier.fillMaxWidth(),
                     )
-                }
-                // Under a category that belongs to this tracker, the new one always does too.
-                if (detail.canPromoteAsGlobal) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "Also add to global categories",
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Switch(
-                            checked = detail.promoteAsGlobal,
-                            onCheckedChange = onAsGlobalChange,
-                            enabled = !detail.isPromoting,
-                        )
-                    }
-                    Text(
-                        text = if (detail.promoteAsGlobal) {
-                            "Offered to all your trackers, and switched on in this one."
-                        } else {
-                            "For this tracker only."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    DialogSwitchRow(
+                        label = "Add to global sub-categories",
+                        checked = detail.isPromotingGlobalSubcategory,
+                        enabled = !detail.isPromoting && detail.canPromoteSubcategoryAsGlobal,
+                        onCheckedChange = onSubcategoryAsGlobalChange,
+                        note = GLOBAL_SUBCATEGORY_NOTE.takeIf { !detail.canPromoteSubcategoryAsGlobal },
                     )
                 }
+                Text(
+                    text = scopeSentence(
+                        name = detail.promoteName,
+                        subcategoryName = detail.promoteSubcategoryName.takeIf { showsSubcategory },
+                        isGlobal = detail.isPromotingGlobal,
+                        subcategoryIsGlobal = detail.isPromotingGlobalSubcategory,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 if (detail.promoteError != null) {
                     Text(
                         text = detail.promoteError,
@@ -554,6 +558,41 @@ private fun PromoteDialog(
             TextButton(onClick = onDismiss, enabled = !detail.isPromoting) { Text("Cancel") }
         },
     )
+}
+
+/**
+ * A label with an on/off switch at the end of the row, for the dialogs. A
+ * switch that cannot be turned on is greyed out, with a note under it saying why.
+ */
+@Composable
+private fun DialogSwitchRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    note: String? = null,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = LocalContentColor.current.copy(alpha = if (enabled) 1f else 0.38f),
+                modifier = Modifier.weight(1f),
+            )
+            Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        }
+        if (note != null) {
+            Text(
+                text = note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 /** Every version of the entry, oldest first, and when and why each was replaced or deleted. */

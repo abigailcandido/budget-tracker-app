@@ -523,6 +523,7 @@ class TrackerViewModel(
                     promoteWithSubcategory = false,
                     promoteSubcategoryName = "",
                     promoteAsGlobal = false,
+                    promoteSubcategoryAsGlobal = false,
                     promoteError = null,
                 )
             }
@@ -549,9 +550,28 @@ class TrackerViewModel(
         }
     }
 
+    /** Turning it off turns the sub-category's switch off too, since that needs it. */
     fun onPromoteAsGlobalChange(value: Boolean) {
         updateDetail { detail ->
-            if (!detail.canPromoteAsGlobal) detail else detail.copy(promoteAsGlobal = value, promoteError = null)
+            if (!detail.canPromoteAsGlobal) {
+                detail
+            } else {
+                detail.copy(
+                    promoteAsGlobal = value,
+                    promoteSubcategoryAsGlobal = detail.promoteSubcategoryAsGlobal && value,
+                    promoteError = null,
+                )
+            }
+        }
+    }
+
+    fun onPromoteSubcategoryAsGlobalChange(value: Boolean) {
+        updateDetail { detail ->
+            if (!detail.canPromoteSubcategoryAsGlobal) {
+                detail
+            } else {
+                detail.copy(promoteSubcategoryAsGlobal = value, promoteError = null)
+            }
         }
     }
 
@@ -581,7 +601,8 @@ class TrackerViewModel(
                     detail.entry.id,
                     detail.promoteName,
                     subcategoryName,
-                    isGlobal = detail.canPromoteAsGlobal && detail.promoteAsGlobal,
+                    isGlobal = detail.isPromotingGlobal,
+                    subcategoryIsGlobal = detail.isPromotingGlobalSubcategory,
                 )
             ) {
                 is ApiResult.Success -> closeDetailAndRefresh(notice = promoteNotice(result.data))
@@ -767,9 +788,29 @@ class TrackerViewModel(
         updateForm { it.copy(subcategoryName = value.take(OTHER_NAME_MAX_LENGTH), error = null) }
     }
 
-    /** The "Also add to global categories" switch. Off by default. */
+    /**
+     * The "Also add to global categories" switch. Off by default. Turning it
+     * off turns the sub-category's switch off too, since that needs it.
+     */
     fun onAddAsGlobalChange(value: Boolean) {
-        updateForm { it.copy(addAsGlobal = value, error = null) }
+        updateForm { form ->
+            form.copy(
+                addAsGlobal = value,
+                addSubcategoryAsGlobal = form.addSubcategoryAsGlobal && value,
+                error = null,
+            )
+        }
+    }
+
+    /** The "Add to global sub-categories" switch. Off by default. */
+    fun onAddSubcategoryAsGlobalChange(value: Boolean) {
+        updateForm { form ->
+            if (!form.canAddSubcategoryAsGlobal) {
+                form
+            } else {
+                form.copy(addSubcategoryAsGlobal = value, error = null)
+            }
+        }
     }
 
     /**
@@ -836,6 +877,7 @@ class TrackerViewModel(
                         subcategoryName = form.subcategoryName
                             .takeIf { form.canHaveSubcategory && form.withSubcategory },
                         isGlobal = form.isMakingGlobal,
+                        subcategoryIsGlobal = form.isMakingGlobalSubcategory,
                     )
                     when (made) {
                         is ApiResult.Success -> made.data.id

@@ -75,6 +75,9 @@ data class PromoteOtherRequest(
     @SerialName("subcategory_name") val subcategoryName: String? = null,
     // Left out unless true: a new category then belongs to this tracker only.
     @SerialName("is_global") val isGlobal: Boolean = false,
+    // The same for the new sub-category. Only a global category can have a
+    // global one, so the server ignores it under a category kept to a tracker.
+    @SerialName("subcategory_is_global") val subcategoryIsGlobal: Boolean = false,
 )
 
 @Serializable
