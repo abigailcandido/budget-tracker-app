@@ -102,6 +102,7 @@ class CategoryRepository(
      * A category named on the add form instead of Others, found by name or made:
      * a top-level one (with a sub-category if one is named, which is what comes
      * back), or one of parentId's sub-categories. Switched on in this tracker.
+     * Whatever is made belongs to this tracker unless isGlobal is true.
      */
     suspend fun findOrCreate(
         trackerId: Int,
@@ -109,6 +110,7 @@ class CategoryRepository(
         parentId: Int?,
         name: String,
         subcategoryName: String?,
+        isGlobal: Boolean,
     ): ApiResult<TrackerCategoryResponse> =
         tokenStore.withToken { token ->
             api.findOrCreate(
@@ -119,6 +121,7 @@ class CategoryRepository(
                     parentId = parentId,
                     name = name.trim(),
                     subcategoryName = subcategoryName?.trim()?.takeIf { it.isNotEmpty() },
+                    isGlobal = isGlobal,
                 ),
             )
         }

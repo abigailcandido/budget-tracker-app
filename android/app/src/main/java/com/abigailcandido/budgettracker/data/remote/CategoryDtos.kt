@@ -41,6 +41,8 @@ data class CategoryFindOrCreateRequest(
     @SerialName("parent_id") val parentId: Int? = null,
     val name: String,
     @SerialName("subcategory_name") val subcategoryName: String? = null,
+    // Left out unless true: whatever is made then belongs to this tracker only.
+    @SerialName("is_global") val isGlobal: Boolean = false,
 )
 
 /** Which Others bucket: the top-level one of a kind, or the one under a parent. */

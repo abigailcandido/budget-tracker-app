@@ -73,6 +73,8 @@ data class PromoteOtherRequest(
     val name: String? = null,
     // Only under the top-level Others: a sub-category to make under the new category.
     @SerialName("subcategory_name") val subcategoryName: String? = null,
+    // Left out unless true: a new category then belongs to this tracker only.
+    @SerialName("is_global") val isGlobal: Boolean = false,
 )
 
 @Serializable
@@ -81,6 +83,8 @@ data class PromoteOtherResponse(
     @SerialName("category_name") val categoryName: String,
     // False when a category with that name already existed and was used.
     val created: Boolean,
+    // Whether it is offered to every tracker, or belongs to this one only.
+    @SerialName("is_global") val isGlobal: Boolean = false,
     // How many Others entries with that name moved into it.
     val moved: Int,
 )
@@ -96,6 +100,8 @@ data class TransactionResponse(
     @SerialName("category_id") val categoryId: Int? = null,
     @SerialName("category_name") val categoryName: String? = null,
     @SerialName("parent_category_name") val parentCategoryName: String? = null,
+    // Whether that parent is offered to every tracker. Null without a parent.
+    @SerialName("parent_category_is_global") val parentCategoryIsGlobal: Boolean? = null,
     val description: String? = null,
     @SerialName("transaction_date") val transactionDate: String,
     @SerialName("created_at") val createdAt: String,

@@ -77,6 +77,7 @@ fun EntryDetailScreen(
     onPromoteNameChange: (String) -> Unit,
     onPromoteWithSubcategoryChange: (Boolean) -> Unit,
     onPromoteSubcategoryNameChange: (String) -> Unit,
+    onPromoteAsGlobalChange: (Boolean) -> Unit,
     onConfirmPromote: () -> Unit,
     onDismissPromote: () -> Unit,
     modifier: Modifier = Modifier,
@@ -243,6 +244,7 @@ fun EntryDetailScreen(
             onNameChange = onPromoteNameChange,
             onWithSubcategoryChange = onPromoteWithSubcategoryChange,
             onSubcategoryNameChange = onPromoteSubcategoryNameChange,
+            onAsGlobalChange = onPromoteAsGlobalChange,
             onConfirm = onConfirmPromote,
             onDismiss = onDismissPromote,
         )
@@ -429,6 +431,7 @@ private fun PromoteDialog(
     onNameChange: (String) -> Unit,
     onWithSubcategoryChange: (Boolean) -> Unit,
     onSubcategoryNameChange: (String) -> Unit,
+    onAsGlobalChange: (Boolean) -> Unit,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -504,6 +507,33 @@ private fun PromoteDialog(
                             capitalization = KeyboardCapitalization.Sentences,
                         ),
                         modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                // Under a category that belongs to this tracker, the new one always does too.
+                if (detail.canPromoteAsGlobal) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Also add to global categories",
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = detail.promoteAsGlobal,
+                            onCheckedChange = onAsGlobalChange,
+                            enabled = !detail.isPromoting,
+                        )
+                    }
+                    Text(
+                        text = if (detail.promoteAsGlobal) {
+                            "Offered to all your trackers, and switched on in this one."
+                        } else {
+                            "For this tracker only."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 if (detail.promoteError != null) {

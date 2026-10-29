@@ -45,6 +45,8 @@ data class CategoryOption(
     val id: Int,
     val name: String,
     val kind: CategoryKind,
+    /** Offered to every tracker, rather than belonging to this one. */
+    val isGlobal: Boolean = false,
     val hasSubcategories: Boolean = false,
     /** Its switched-on subcategories, not counting its Others. */
     val subcategories: List<SubcategoryOption> = emptyList(),
@@ -88,6 +90,11 @@ data class EntryForm(
     val withSubcategory: Boolean = false,
     /** That sub-category's name, such as "Food" under a new "Pets". */
     val subcategoryName: String = "",
+    /**
+     * The "Also add to global categories" switch. Off, whatever is made belongs
+     * to this tracker only; on, it is offered to every tracker.
+     */
+    val addAsGlobal: Boolean = false,
     /**
      * The category the entry had when the page opened. It stays on offer even
      * if it has since been switched off, so correcting an old amount never
@@ -146,6 +153,18 @@ data class EntryForm(
 
     private val isMakingSubcategory: Boolean
         get() = isMakingCategory && canHaveSubcategory && withSubcategory
+
+    /**
+     * Whether the new category may be global. At the top level it may; under
+     * a category, only when that category is global itself, since one that
+     * belongs to this tracker can only hold sub-categories of this tracker.
+     */
+    val canAddAsGlobal: Boolean
+        get() = isMakingCategory && (canHaveSubcategory || selectedCategory?.isGlobal == true)
+
+    /** Whether the switch is on where it applies. */
+    val isMakingGlobal: Boolean
+        get() = canAddAsGlobal && addAsGlobal
 
     /**
      * The category the entry will be saved under when "Add to my categories"
@@ -271,7 +290,7 @@ fun categoryOptions(
         .mapNotNull { top ->
             if (!top.hasChildren) {
                 if (top.isEnabled || top.id == keepId) {
-                    CategoryOption(top.id, top.name, top.categoryKind)
+                    CategoryOption(top.id, top.name, top.categoryKind, isGlobal = top.isGlobal)
                 } else {
                     null
                 }
@@ -286,6 +305,7 @@ fun categoryOptions(
                         id = top.id,
                         name = top.name,
                         kind = top.categoryKind,
+                        isGlobal = top.isGlobal,
                         hasSubcategories = true,
                         subcategories = usable
                             .filter { !isOthersName(it.name) }

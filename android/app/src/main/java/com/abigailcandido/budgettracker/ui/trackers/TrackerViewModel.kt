@@ -522,6 +522,7 @@ class TrackerViewModel(
                     promoteName = detail.entry.otherName.orEmpty(),
                     promoteWithSubcategory = false,
                     promoteSubcategoryName = "",
+                    promoteAsGlobal = false,
                     promoteError = null,
                 )
             }
@@ -545,6 +546,12 @@ class TrackerViewModel(
     fun onPromoteSubcategoryNameChange(value: String) {
         updateDetail {
             it.copy(promoteSubcategoryName = value.take(OTHER_NAME_MAX_LENGTH), promoteError = null)
+        }
+    }
+
+    fun onPromoteAsGlobalChange(value: Boolean) {
+        updateDetail { detail ->
+            if (!detail.canPromoteAsGlobal) detail else detail.copy(promoteAsGlobal = value, promoteError = null)
         }
     }
 
@@ -574,6 +581,7 @@ class TrackerViewModel(
                     detail.entry.id,
                     detail.promoteName,
                     subcategoryName,
+                    isGlobal = detail.canPromoteAsGlobal && detail.promoteAsGlobal,
                 )
             ) {
                 is ApiResult.Success -> closeDetailAndRefresh(notice = promoteNotice(result.data))
@@ -587,7 +595,8 @@ class TrackerViewModel(
     private fun promoteNotice(result: PromoteOtherResponse): String {
         val entries = if (result.moved == 1) "1 entry" else "${result.moved} entries"
         return if (result.created) {
-            "${result.categoryName} is now one of your categories. $entries moved into it from Others."
+            val where = if (result.isGlobal) "your global categories" else "this tracker's categories"
+            "${result.categoryName} is now one of $where. $entries moved into it from Others."
         } else {
             "${result.categoryName} was already one of your categories, so $entries moved into it from Others."
         }
@@ -758,6 +767,11 @@ class TrackerViewModel(
         updateForm { it.copy(subcategoryName = value.take(OTHER_NAME_MAX_LENGTH), error = null) }
     }
 
+    /** The "Also add to global categories" switch. Off by default. */
+    fun onAddAsGlobalChange(value: Boolean) {
+        updateForm { it.copy(addAsGlobal = value, error = null) }
+    }
+
     /**
      * The name typed under Others is already a category, so the entry is
      * filed there instead, and the name is no longer needed.
@@ -821,6 +835,7 @@ class TrackerViewModel(
                         name = form.otherName,
                         subcategoryName = form.subcategoryName
                             .takeIf { form.canHaveSubcategory && form.withSubcategory },
+                        isGlobal = form.isMakingGlobal,
                     )
                     when (made) {
                         is ApiResult.Success -> made.data.id

@@ -117,17 +117,19 @@ class TransactionRepository(
      * Gives an Others entry a category of its own, named after it unless a
      * different name is given, and moves every Others entry of that name into
      * it. Under the top-level Others, the new category can hold a sub-category.
+     * Whatever is made belongs to this tracker unless isGlobal is true.
      */
     suspend fun promoteOther(
         transactionId: Int,
         name: String?,
         subcategoryName: String?,
+        isGlobal: Boolean,
     ): ApiResult<PromoteOtherResponse> =
         tokenStore.withToken { token ->
             api.promoteOther(
                 token,
                 transactionId,
-                PromoteOtherRequest(name.cleaned(), subcategoryName.cleaned()),
+                PromoteOtherRequest(name.cleaned(), subcategoryName.cleaned(), isGlobal),
             )
         }
 

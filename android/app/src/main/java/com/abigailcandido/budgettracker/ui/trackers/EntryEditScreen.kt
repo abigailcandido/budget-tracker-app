@@ -63,6 +63,7 @@ fun EntryEditScreen(
     onAddToCategoriesChange: (Boolean) -> Unit,
     onWithSubcategoryChange: (Boolean) -> Unit,
     onSubcategoryNameChange: (String) -> Unit,
+    onAddAsGlobalChange: (Boolean) -> Unit,
     onAmountChange: (String) -> Unit,
     onDateChange: (LocalDate) -> Unit,
     onNoteChange: (String) -> Unit,
@@ -197,6 +198,7 @@ fun EntryEditScreen(
                     onAddToCategoriesChange = onAddToCategoriesChange,
                     onWithSubcategoryChange = onWithSubcategoryChange,
                     onSubcategoryNameChange = onSubcategoryNameChange,
+                    onAddAsGlobalChange = onAddAsGlobalChange,
                     onRetry = onRetryCategories,
                 )
             }
@@ -312,6 +314,7 @@ private fun CategorySection(
     onAddToCategoriesChange: (Boolean) -> Unit,
     onWithSubcategoryChange: (Boolean) -> Unit,
     onSubcategoryNameChange: (String) -> Unit,
+    onAddAsGlobalChange: (Boolean) -> Unit,
     onRetry: () -> Unit,
 ) {
     val kindWord = if (form.type == EntryType.Income) "income" else "expense"
@@ -376,6 +379,7 @@ private fun CategorySection(
                     onAddToCategoriesChange = onAddToCategoriesChange,
                     onWithSubcategoryChange = onWithSubcategoryChange,
                     onSubcategoryNameChange = onSubcategoryNameChange,
+                    onAddAsGlobalChange = onAddAsGlobalChange,
                 )
             }
         }
@@ -396,6 +400,7 @@ private fun OtherNameField(
     onAddToCategoriesChange: (Boolean) -> Unit,
     onWithSubcategoryChange: (Boolean) -> Unit,
     onSubcategoryNameChange: (String) -> Unit,
+    onAddAsGlobalChange: (Boolean) -> Unit,
 ) {
     // Nothing is called a problem until something has been typed.
     val problem = form.otherNameProblem.takeIf { form.otherName.isNotBlank() }
@@ -417,7 +422,10 @@ private fun OtherNameField(
                 Text(
                     when {
                         problem != null -> problem
-                        newCategory != null -> "Saved under a category of its own: $newCategory."
+                        newCategory != null && form.isMakingGlobal ->
+                            "Saved under a category of its own: $newCategory, offered to all your trackers."
+                        newCategory != null ->
+                            "Saved under a category of its own: $newCategory, for this tracker only."
                         form.addToCategories -> "Saved under a category of its own."
                         else -> "Saved under Others. You can add it to your categories " +
                                 "later, from its details."
@@ -471,6 +479,17 @@ private fun OtherNameField(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+        }
+
+        // At the top level, or under a global category. Under a category that
+        // belongs to this tracker, the new sub-category always does too.
+        if (form.canAddAsGlobal) {
+            SwitchRow(
+                label = "Also add to global categories",
+                checked = form.addAsGlobal,
+                enabled = !form.isBusy,
+                onCheckedChange = onAddAsGlobalChange,
+            )
         }
     }
 }
