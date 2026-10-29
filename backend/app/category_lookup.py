@@ -181,13 +181,18 @@ def find_or_create_path(
     user: User,
     db: Session,
     is_global: bool = False,
+    subcategory_is_global: bool = False,
 ) -> tuple[Category, bool]:
     """The category to file an entry under, given by name, made if need be.
 
     Without a sub-category this is find_or_create_leaf. With one, the name is
     a top-level category holding that sub-category, as in "Pets › Food": both
-    are found or made, and the sub-category is what comes back. is_global
-    applies to whichever of the two is made.
+    are found or made, and the sub-category is what comes back.
+
+    is_global is for the top-level category, if it is made now, and
+    subcategory_is_global for the sub-category. Under a top-level category
+    that belongs to one tracker, the sub-category belongs to that tracker too,
+    whatever subcategory_is_global says.
 
     An existing top-level category with no sub-categories of its own is
     refused here. Giving it one would move everything already filed under it,
@@ -246,6 +251,6 @@ def find_or_create_path(
             )
 
     leaf, leaf_created = find_or_create_leaf(
-        subcategory_name, kind, top, tracker, user, db, is_global
+        subcategory_name, kind, top, tracker, user, db, subcategory_is_global
     )
     return leaf, top_created or leaf_created

@@ -713,6 +713,7 @@ def find_or_create_category(
         user,
         db,
         payload.is_global,
+        payload.subcategory_is_global,
     )
     db.commit()
     db.refresh(category)

@@ -943,6 +943,7 @@ def promote_other(
         user,
         db,
         payload.is_global,
+        payload.subcategory_is_global,
     )
     target_parent = db.get(Category, target.parent_id) if target.parent_id is not None else None
     label = f"{target_parent.name} › {target.name}" if target_parent is not None else target.name

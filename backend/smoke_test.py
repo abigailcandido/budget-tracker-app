@@ -1365,6 +1365,63 @@ def main() -> None:
         (status, (body or {}).get("detail")),
         (409, "One of your trackers already has its own category with this name"),
     )
+    
+    print("\nGlobal sub-categories")
+    status, yarn = call(
+        "POST", make, token_a, {"name": "Crafts", "subcategory_name": "Yarn", "is_global": True}
+    )
+    check(
+        "a global category's new sub-category belongs to its tracker unless asked",
+        (status, (yarn or {}).get("is_global")),
+        (200, False),
+    )
+    status, lessons = call(
+        "POST",
+        make,
+        token_a,
+        {
+            "name": "Music",
+            "subcategory_name": "Lessons",
+            "is_global": True,
+            "subcategory_is_global": True,
+        },
+    )
+    check(
+        "or it can be global too",
+        (status, (lessons or {}).get("is_global")),
+        (200, True),
+    )
+    status, rows = call("GET", f"/trackers/{two}/categories", token_a)
+    check(
+        "another tracker is offered the global one, not the one kept to a tracker",
+        sorted({"Crafts", "Yarn", "Music", "Lessons"} & set(names(rows))),
+        ["Crafts", "Lessons", "Music"],
+    )
+
+    status, flour = call(
+        "POST",
+        make,
+        token_a,
+        {"name": "Baking", "subcategory_name": "Flour", "subcategory_is_global": True},
+    )
+    check(
+        "under a category kept to one tracker, a sub-category cannot be global",
+        (status, (flour or {}).get("is_global")),
+        (200, False),
+    )
+
+    status, trip = call("POST", "/transactions", token_a, {**pet, "other_name": "Travel"})
+    status, promoted = call(
+        "POST",
+        f"/transactions/{id_of(trip)}/promote-other",
+        token_a,
+        {"subcategory_name": "Flights", "is_global": True, "subcategory_is_global": True},
+    )
+    check(
+        "an Others entry can become a global category with a global sub-category",
+        (status, (promoted or {}).get("category_name"), (promoted or {}).get("is_global")),
+        (200, "Travel › Flights", True),
+    )
 
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)

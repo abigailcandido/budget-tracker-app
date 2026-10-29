@@ -468,6 +468,16 @@ class CategoryFindOrCreateRequest(BaseModel):
         ),
     )
 
+    subcategory_is_global: bool = Field(
+        default=False,
+        description=(
+            "With subcategory_name: whether the sub-category, if made now, is "
+            "offered to every tracker. Left out, it belongs to this tracker "
+            "only. Under a category that belongs to one tracker, it always "
+            "belongs to that tracker."
+        ),
+    )
+
     @field_validator("name")
     @classmethod
     def require_name(cls, value: str) -> str:
@@ -502,6 +512,16 @@ class PromoteOtherRequest(BaseModel):
         description=(
             "Whether a category made now is offered to every tracker. Left out, "
             "it belongs to this entry's tracker only."
+        ),
+    )
+
+    subcategory_is_global: bool = Field(
+        default=False,
+        description=(
+            "With subcategory_name: whether the sub-category, if made now, is "
+            "offered to every tracker. Left out, it belongs to this entry's "
+            "tracker only. Under a category that belongs to one tracker, it "
+            "always belongs to that tracker."
         ),
     )
 
