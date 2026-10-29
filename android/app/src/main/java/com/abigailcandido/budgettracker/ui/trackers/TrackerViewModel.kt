@@ -5,10 +5,13 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.abigailcandido.budgettracker.data.AuthRepository
+import com.abigailcandido.budgettracker.data.BudgetRepository
 import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.TransactionRepository
 import com.abigailcandido.budgettracker.data.WalletRepository
 import com.abigailcandido.budgettracker.data.remote.ApiResult
+import com.abigailcandido.budgettracker.data.remote.BudgetResponse
+import com.abigailcandido.budgettracker.data.remote.BudgetRow
 import com.abigailcandido.budgettracker.data.remote.CategoryKind
 import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.PromoteOtherResponse
@@ -16,6 +19,7 @@ import com.abigailcandido.budgettracker.data.remote.TrackerSummaryResponse
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
+import com.abigailcandido.budgettracker.data.remote.hasSubcategories
 import com.abigailcandido.budgettracker.ui.pin.PIN_LENGTH
 import java.time.LocalDate
 import kotlinx.coroutines.Job
@@ -36,15 +40,19 @@ private const val CURRENCY_LENGTH = 3
  */
 private val OPENING_BALANCE_PATTERN = Regex("^-?\\d*(\\.\\d{0,2})?$")
 
-/** The tabs under the wallets, in screen order. Overview is the wallet table; the rest are entry lists. */
+/**
+ * The tabs under the wallets, in screen order. Overview is the wallet table,
+ * Budget the expected and actual amounts per category, and the rest are entry lists.
+ */
 enum class EntryFilter(val label: String) {
     Overview("Overview"),
+    Budget("Budget"),
     All("All Transactions"),
     Income("Income"),
     Expenses("Expenses");
 
     fun matches(type: EntryType): Boolean = when (this) {
-        Overview, All -> true
+        Overview, Budget, All -> true
         Income -> type == EntryType.Income
         Expenses -> type == EntryType.Expense
     }
@@ -58,6 +66,12 @@ data class TrackerUiState(
     val wallets: List<WalletResponse> = emptyList(),
     val transactions: List<TransactionResponse> = emptyList(),
     val summary: TrackerSummaryResponse? = null,
+    /** The Budget tab's figures for the range, in one currency. */
+    val budget: BudgetResponse? = null,
+    /** The currency the Budget tab shows, or null to let the server choose. */
+    val budgetCurrency: String? = null,
+    /** Only the Budget tab is reloading, after a new amount or another currency. */
+    val isLoadingBudget: Boolean = false,
     val selectedWalletId: Int? = null,
     val filter: EntryFilter = EntryFilter.Overview,
     val isCreateWalletOpen: Boolean = false,
@@ -74,6 +88,8 @@ data class TrackerUiState(
     val entryDetail: EntryDetailState? = null,
     /** The add-or-edit page's form while that page is open, otherwise null. */
     val entryForm: EntryForm? = null,
+    /** The dialog that sets a category's expected amount, while it is open. */
+    val expectedForm: ExpectedAmountForm? = null,
 ) {
     val selectedWallet: WalletResponse?
         get() = wallets.firstOrNull { it.id == selectedWalletId }
@@ -100,6 +116,7 @@ class TrackerViewModel(
     private val walletRepository: WalletRepository,
     private val categoryRepository: CategoryRepository,
     private val transactionRepository: TransactionRepository,
+    private val budgetRepository: BudgetRepository,
     private val authRepository: AuthRepository,
 ) : ViewModel() {
 
@@ -118,24 +135,29 @@ class TrackerViewModel(
 
     /** The details page's history load, cancelled if the page is closed or reopened. */
     private var historyJob: Job? = null
+    /** A reload of the Budget tab alone, cancelled by a full refresh. */
+    private var budgetJob: Job? = null
 
     init {
         refresh()
     }
 
     /**
-     * Loads wallets, the range's entries and the range's overview side by
-     * side, and shows them only once all three have arrived, so the cards,
-     * the list and the table always agree with each other. After the first
+     * Loads wallets, the range's entries, its overview and its budget side by
+     * side, and shows them only once all four have arrived, so the cards, the
+     * lists and the tables always agree with each other. After the first
      * load, a failed refresh keeps what is showing and reports the problem.
      */
     fun refresh() {
         loadJob?.cancel()
+        // A budget on its way for the old dates must not land on the new ones.
+        budgetJob?.cancel()
         val range = _uiState.value.range
-        _uiState.update { it.copy(isRefreshing = !it.isLoading) }
+        val currency = _uiState.value.budgetCurrency
+        _uiState.update { it.copy(isRefreshing = !it.isLoading, isLoadingBudget = false) }
 
         loadJob = viewModelScope.launch {
-            val (walletResult, entryResult, summaryResult) = coroutineScope {
+            val (walletResult, entryResult, summaryResult, budgetResult) = coroutineScope {
                 val wallets = async { walletRepository.list(trackerId) }
                 val entries = async {
                     transactionRepository.listForTracker(trackerId, range.start, range.end)
@@ -143,13 +165,17 @@ class TrackerViewModel(
                 val summary = async {
                     transactionRepository.summary(trackerId, range.start, range.end)
                 }
-                Triple(wallets.await(), entries.await(), summary.await())
+                val budget = async {
+                    budgetRepository.budget(trackerId, range.start, range.end, currency)
+                }
+                RangeLoad(wallets.await(), entries.await(), summary.await(), budget.await())
             }
 
             if (
                 walletResult is ApiResult.Success &&
                 entryResult is ApiResult.Success &&
-                summaryResult is ApiResult.Success
+                summaryResult is ApiResult.Success &&
+                budgetResult is ApiResult.Success
             ) {
                 _uiState.update { current ->
                     current.copy(
@@ -159,6 +185,9 @@ class TrackerViewModel(
                         wallets = walletResult.data,
                         transactions = entryResult.data,
                         summary = summaryResult.data,
+                        budget = budgetResult.data,
+                        // The server picks another currency once no wallet uses this one.
+                        budgetCurrency = budgetResult.data.currency,
                         // Forget a selected wallet that no longer exists.
                         selectedWalletId = current.selectedWalletId?.takeIf { id ->
                             walletResult.data.any { it.id == id }
@@ -166,7 +195,7 @@ class TrackerViewModel(
                     )
                 }
             } else {
-                val message = listOf(walletResult, entryResult, summaryResult)
+                val message = listOf(walletResult, entryResult, summaryResult, budgetResult)
                     .filterIsInstance<ApiResult.Failure>()
                     .firstOrNull()
                     ?.message
@@ -309,6 +338,130 @@ class TrackerViewModel(
 
     fun onDismissNotice() {
         _uiState.update { it.copy(notice = null) }
+    }
+
+    // ---- The Budget tab ----
+
+    /** Shows the Budget tab in another of the tracker's currencies. */
+    fun onBudgetCurrencySelected(currency: String) {
+        if (currency == _uiState.value.budgetCurrency) return
+        _uiState.update { it.copy(budgetCurrency = currency) }
+        loadBudget()
+    }
+
+    /**
+     * Opens the dialog for a category that holds amounts of its own. It
+     * starts on the month showing, with the amount already in force there.
+     */
+    fun onBudgetRowClick(row: BudgetRow, parentName: String?) {
+        val state = _uiState.value
+        val currency = state.budget?.currency ?: return
+        if (row.hasSubcategories) return
+
+        val month = defaultExpectedMonth(state.range)
+        _uiState.update {
+            it.copy(
+                expectedForm = ExpectedAmountForm(
+                    categoryId = row.categoryId,
+                    label = if (parentName != null) "$parentName › ${row.name}" else row.name,
+                    currency = currency,
+                    amounts = row.amounts,
+                    month = month,
+                    amount = amountIn(row.amounts, month).orEmpty(),
+                ),
+            )
+        }
+    }
+
+    fun onExpectedAmountChange(value: String) {
+        updateExpectedForm { form ->
+            if (form.accepts(value)) form.copy(amount = value, error = null) else form
+        }
+    }
+
+    /** Moves the month the new amount starts from. What was typed stays. */
+    fun onExpectedMonthStep(months: Long) {
+        updateExpectedForm { form ->
+            if (form.isSaving) form else form.copy(month = form.month.plusMonths(months), error = null)
+        }
+    }
+
+    fun onDismissExpectedAmount() {
+        _uiState.update { state ->
+            if (state.expectedForm?.isSaving == true) state else state.copy(expectedForm = null)
+        }
+    }
+
+    fun saveExpectedAmount() {
+        val form = _uiState.value.expectedForm ?: return
+        if (form.canSave) submitExpectedAmount(form, form.amount)
+    }
+
+    /** Clears the expected amount from the chosen month on. */
+    fun clearExpectedAmount() {
+        val form = _uiState.value.expectedForm ?: return
+        if (form.canClear) submitExpectedAmount(form, null)
+    }
+
+    private fun submitExpectedAmount(form: ExpectedAmountForm, amount: String?) {
+        viewModelScope.launch {
+            updateExpectedForm { it.copy(isSaving = true, error = null) }
+
+            when (
+                val result = budgetRepository.setExpected(
+                    trackerId,
+                    form.categoryId,
+                    form.currency,
+                    form.month,
+                    amount,
+                )
+            ) {
+                is ApiResult.Success -> {
+                    _uiState.update { it.copy(expectedForm = null) }
+                    loadBudget()
+                }
+                is ApiResult.Failure -> updateExpectedForm {
+                    it.copy(isSaving = false, error = result.message)
+                }
+            }
+        }
+    }
+
+    /** Reloads the Budget tab alone, after a new amount or another currency. */
+    private fun loadBudget() {
+        budgetJob?.cancel()
+        val state = _uiState.value
+        _uiState.update { it.copy(isLoadingBudget = true) }
+
+        budgetJob = viewModelScope.launch {
+            when (
+                val result = budgetRepository.budget(
+                    trackerId,
+                    state.range.start,
+                    state.range.end,
+                    state.budgetCurrency,
+                )
+            ) {
+                is ApiResult.Success -> _uiState.update {
+                    it.copy(
+                        isLoadingBudget = false,
+                        budget = result.data,
+                        budgetCurrency = result.data.currency,
+                    )
+                }
+                is ApiResult.Failure -> _uiState.update {
+                    it.copy(isLoadingBudget = false, actionError = result.message)
+                }
+            }
+        }
+    }
+
+    /** Changes the dialog if it is open, and does nothing if it has been closed. */
+    private fun updateExpectedForm(transform: (ExpectedAmountForm) -> ExpectedAmountForm) {
+        _uiState.update { state ->
+            val form = state.expectedForm ?: return@update state
+            state.copy(expectedForm = transform(form))
+        }
     }
 
     // ---- The details page, and the PIN check in front of Edit ----
@@ -1017,6 +1170,7 @@ class TrackerViewModel(
             walletRepository: WalletRepository,
             categoryRepository: CategoryRepository,
             transactionRepository: TransactionRepository,
+            budgetRepository: BudgetRepository,
             authRepository: AuthRepository,
         ) = viewModelFactory {
             initializer {
@@ -1025,9 +1179,18 @@ class TrackerViewModel(
                     walletRepository,
                     categoryRepository,
                     transactionRepository,
+                    budgetRepository,
                     authRepository,
                 )
             }
         }
     }
 }
+
+/** Everything the tracker screen shows for one range, loaded side by side. */
+private data class RangeLoad(
+    val wallets: ApiResult<List<WalletResponse>>,
+    val entries: ApiResult<List<TransactionResponse>>,
+    val summary: ApiResult<TrackerSummaryResponse>,
+    val budget: ApiResult<BudgetResponse>,
+)

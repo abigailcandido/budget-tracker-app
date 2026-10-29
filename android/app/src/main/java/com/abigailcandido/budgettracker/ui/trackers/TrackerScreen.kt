@@ -55,6 +55,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.abigailcandido.budgettracker.data.remote.BudgetRow
 import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
@@ -95,6 +96,13 @@ fun TrackerScreen(
     onRetry: () -> Unit,
     onAddEntryClick: () -> Unit,
     onEntryClick: (TransactionResponse) -> Unit,
+    onBudgetCurrencySelected: (String) -> Unit,
+    onBudgetRowClick: (BudgetRow, String?) -> Unit,
+    onExpectedAmountChange: (String) -> Unit,
+    onExpectedMonthStep: (Long) -> Unit,
+    onSaveExpectedAmount: () -> Unit,
+    onClearExpectedAmount: () -> Unit,
+    onDismissExpectedAmount: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showCustomRange by remember { mutableStateOf(false) }
@@ -150,7 +158,7 @@ fun TrackerScreen(
                 )
 
                 // Always takes the same space, so nothing jumps when it appears.
-                if (state.isRefreshing) {
+                if (state.isRefreshing || state.isLoadingBudget) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 } else {
                     Spacer(Modifier.height(4.dp))
@@ -186,10 +194,18 @@ fun TrackerScreen(
 
                 EntryFilterTabs(selected = state.filter, onSelect = onFilterSelected)
 
-                if (state.filter == EntryFilter.Overview) {
-                    OverviewTable(state = state, modifier = Modifier.weight(1f))
-                } else {
-                    EntryList(
+                when (state.filter) {
+                    EntryFilter.Overview -> OverviewTable(
+                        state = state,
+                        modifier = Modifier.weight(1f),
+                    )
+                    EntryFilter.Budget -> BudgetTab(
+                        state = state,
+                        onCurrencySelected = onBudgetCurrencySelected,
+                        onRowClick = onBudgetRowClick,
+                        modifier = Modifier.weight(1f),
+                    )
+                    else -> EntryList(
                         state = state,
                         onEntryClick = onEntryClick,
                         modifier = Modifier.weight(1f),
@@ -348,6 +364,18 @@ fun TrackerScreen(
             confirmButton = {
                 TextButton(onClick = onDismissNotice) { Text("OK") }
             },
+        )
+    }
+
+    val expectedForm = state.expectedForm
+    if (expectedForm != null) {
+        ExpectedAmountDialog(
+            form = expectedForm,
+            onAmountChange = onExpectedAmountChange,
+            onMonthStep = onExpectedMonthStep,
+            onSave = onSaveExpectedAmount,
+            onClear = onClearExpectedAmount,
+            onDismiss = onDismissExpectedAmount,
         )
     }
 }
@@ -594,7 +622,7 @@ private fun EntryList(
         CenteredMessage(modifier) {
             Text(
                 text = when (state.filter) {
-                    EntryFilter.All, EntryFilter.Overview -> "No transactions"
+                    EntryFilter.All, EntryFilter.Overview, EntryFilter.Budget -> "No transactions"
                     EntryFilter.Expenses -> "No expenses"
                     EntryFilter.Income -> "No income"
                 } + " in ${state.range.label}",

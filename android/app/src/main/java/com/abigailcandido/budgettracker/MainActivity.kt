@@ -23,6 +23,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.abigailcandido.budgettracker.data.AuthRepository
+import com.abigailcandido.budgettracker.data.BudgetRepository
 import com.abigailcandido.budgettracker.data.CategoryRepository
 import com.abigailcandido.budgettracker.data.TrackerRepository
 import com.abigailcandido.budgettracker.data.TransactionRepository
@@ -69,6 +70,7 @@ class MainActivity : ComponentActivity() {
     private val categoryRepository by lazy { CategoryRepository(tokenStore) }
 
     private val transactionRepository by lazy { TransactionRepository(tokenStore) }
+    private val budgetRepository by lazy { BudgetRepository(tokenStore) }
 
     private val authViewModel: AuthViewModel by viewModels { AuthViewModel.factory(authRepository) }
     private val pinViewModel: PinViewModel by viewModels { PinViewModel.factory(authRepository) }
@@ -182,6 +184,7 @@ private fun SignedInNavHost(
             walletRepository,
             categoryRepository,
             transactionRepository,
+            budgetRepository,
             authRepository,
         )
     }
@@ -350,6 +353,13 @@ private fun SignedInNavHost(
                     trackerViewModel.onEntryClick(entry)
                     navController.navigate(EntryDetail(route.trackerId)) { launchSingleTop = true }
                 },
+                onBudgetCurrencySelected = trackerViewModel::onBudgetCurrencySelected,
+                onBudgetRowClick = trackerViewModel::onBudgetRowClick,
+                onExpectedAmountChange = trackerViewModel::onExpectedAmountChange,
+                onExpectedMonthStep = trackerViewModel::onExpectedMonthStep,
+                onSaveExpectedAmount = trackerViewModel::saveExpectedAmount,
+                onClearExpectedAmount = trackerViewModel::clearExpectedAmount,
+                onDismissExpectedAmount = trackerViewModel::onDismissExpectedAmount,
             )
         }
 
