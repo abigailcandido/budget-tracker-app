@@ -442,14 +442,9 @@ class TransferCreateRequest(BaseModel):
         max_digits=AMOUNT_MAX_DIGITS,
         decimal_places=MONEY_DECIMAL_PLACES,
         description=(
-            "Optional: a charge for the transfer, recorded as a separate expense "
-            "from the first wallet."
+            "Optional: a charge for the transfer, recorded as an expense from "
+            "the first wallet, under Transfer Fee."
         ),
-    )
-    fee_category_id: int | None = Field(
-        default=None,
-        ge=1,
-        description="The expense category the fee is filed under. Needed with a fee.",
     )
 
     @field_validator("transaction_date")
@@ -466,8 +461,8 @@ class TransferCreateRequest(BaseModel):
 class TransferUpdateRequest(BaseModel):
     """Every field is optional; anything left out stays as it is.
 
-    Sending description as null clears it. A fee was recorded as an expense of
-    its own, so it is corrected or deleted on its own.
+    Sending description as null clears it, and sending fee as null removes
+    the fee.
     """
 
     from_wallet_id: int | None = Field(default=None, ge=1)
@@ -486,6 +481,12 @@ class TransferUpdateRequest(BaseModel):
     )
     transaction_date: date | None = None
     description: str | None = Field(default=None, max_length=255)
+    fee: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=AMOUNT_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+    )
     reason: str | None = Field(
         default=None,
         max_length=255,
@@ -670,6 +671,10 @@ class TransactionResponse(BaseModel):
     to_wallet_name: str | None = None
     to_currency: str | None = None
     to_amount: str | None = None
+    # On a transfer with a fee: the fee, in the currency of the wallet it left.
+    fee: str | None = None
+    # On a transfer's fee: the transfer it belongs to.
+    fee_for_id: int | None = None
     
 class WalletSummaryResponse(BaseModel):
     """One wallet's movement over a date range.

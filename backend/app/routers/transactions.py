@@ -21,7 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session, aliased
 
-from app.category_lookup import find_or_create_path, is_others
+from app.category_lookup import find_or_create_leaf, find_or_create_path, is_others, visible_in
 from app.deps import get_current_user, get_db
 from app.email_codes import (
     CODE_LIFETIME,
@@ -39,6 +39,7 @@ from app.models import (
     TRANSACTION_OPENING,
     TRANSACTION_TRANSFER_IN,
     TRANSACTION_TRANSFER_OUT,
+    TRANSFER_FEE_CATEGORY_NAME,
     Category,
     TrackerCategory,
     Transaction,
@@ -51,6 +52,7 @@ from app.ownership import (
     get_owned_transaction,
     get_owned_wallet,
 )
+from app.routers.categories import GENERAL_SUBCATEGORY_NAME
 from app.schemas import (
     CurrencyTotalResponse,
     EmailCodeResponse,
@@ -80,6 +82,9 @@ Correction = aliased(Transaction)
 # On a transfer, the row where the money arrived, and that row's wallet.
 Arrival = aliased(Transaction)
 ArrivalWallet = aliased(Wallet)
+
+# On a transfer, its fee, if it has one.
+Fee = aliased(Transaction)
 
 # --------------------------------------------------------------------------
 # Shared helpers
@@ -274,6 +279,7 @@ def _described(db: Session):
             Correction.id,
             Arrival,
             ArrivalWallet,
+            Fee,
         )
         .join(Wallet, Transaction.wallet_id == Wallet.id)
         .outerjoin(Category, Transaction.category_id == Category.id)
@@ -282,6 +288,7 @@ def _described(db: Session):
         .outerjoin(Correction, Correction.replaces_id == Transaction.id)
         .outerjoin(Arrival, Arrival.transfer_out_id == Transaction.id)
         .outerjoin(ArrivalWallet, Arrival.wallet_id == ArrivalWallet.id)
+        .outerjoin(Fee, Fee.fee_for_id == Transaction.id)
     )
 
 
@@ -294,6 +301,7 @@ def _to_response(
     correction_id: int | None,
     arrival: Transaction | None = None,
     arrival_wallet: Wallet | None = None,
+    fee: Transaction | None = None,
 ) -> TransactionResponse:
     return TransactionResponse(
         id=transaction.id,
@@ -322,6 +330,8 @@ def _to_response(
         to_wallet_name=arrival_wallet.name if arrival_wallet is not None else None,
         to_currency=arrival_wallet.currency if arrival_wallet is not None else None,
         to_amount=format_money(arrival.amount) if arrival is not None else None,
+        fee=format_money(fee.amount) if fee is not None else None,
+        fee_for_id=transaction.fee_for_id,
     )
 
 
@@ -338,6 +348,73 @@ def _arrival(departure: Transaction, db: Session) -> Transaction | None:
         .filter(Transaction.transfer_out_id == departure.id)
         .with_for_update()
         .first()
+    )
+
+
+def _fee(departure: Transaction, db: Session) -> Transaction | None:
+    """On a transfer, its fee, if it has one. Locked, since it is corrected,
+    deleted and restored along with the transfer."""
+    return (
+        db.query(Transaction)
+        .filter(Transaction.fee_for_id == departure.id)
+        .with_for_update()
+        .first()
+    )
+
+
+def _transfer_fee_category(wallet: Wallet, user: User, db: Session) -> Category:
+    """Where every transfer fee goes: the tracker's Transfer Fee category, made
+    and switched on there the first time a fee is charged. If Transfer Fee has
+    been given sub-categories since, fees go under its General."""
+    tracker = get_owned_tracker(wallet.main_tracker_id, user, db)
+    top = (
+        db.query(Category)
+        .filter(
+            Category.user_id == user.id,
+            func.lower(Category.name) == TRANSFER_FEE_CATEGORY_NAME.lower(),
+            Category.parent_id.is_(None),
+            Category.kind == TRANSACTION_EXPENSE,
+            visible_in(tracker),
+        )
+        .first()
+    )
+    has_children = top is not None and (
+        db.query(Category.id).filter(Category.parent_id == top.id).first() is not None
+    )
+    if has_children:
+        category, _ = find_or_create_leaf(
+            GENERAL_SUBCATEGORY_NAME, TRANSACTION_EXPENSE, top, tracker, user, db
+        )
+    else:
+        category, _ = find_or_create_leaf(
+            TRANSFER_FEE_CATEGORY_NAME, TRANSACTION_EXPENSE, None, tracker, user, db
+        )
+    return category
+
+
+def _charge_fee(
+    departure: Transaction,
+    destination: Wallet,
+    amount: Decimal,
+    category: Category,
+    wallets: dict[int, Wallet],
+    replaces: Transaction | None = None,
+) -> Transaction:
+    """A transfer's fee: an expense from the wallet the money left, applied to
+    its balance. When the transfer is corrected, the new fee replaces the old
+    one. The departure must already have its id."""
+    wallets[departure.wallet_id].balance += _effect(TRANSACTION_EXPENSE, amount)
+    return Transaction(
+        user_id=departure.user_id,
+        wallet_id=departure.wallet_id,
+        category_id=category.id,
+        amount=amount,
+        type=TRANSACTION_EXPENSE,
+        description=f"Fee for a transfer to {destination.name}"[:255],
+        transaction_date=departure.transaction_date,
+        replaces_id=replaces.id if replaces is not None else None,
+        origin_id=(replaces.origin_id or replaces.id) if replaces is not None else None,
+        fee_for_id=departure.id,
     )
 
 
@@ -361,13 +438,18 @@ def _arrive(
     )
 
 
-def _refuse_arrival(transaction: Transaction) -> None:
-    """Where a transfer arrived goes wherever the transfer goes, so it is never
-    corrected, deleted or restored by itself."""
+def _refuse_transfer_part(transaction: Transaction) -> None:
+    """Where a transfer arrived, and a transfer's fee, go wherever the transfer
+    goes, so neither is ever corrected, deleted or restored by itself."""
     if transaction.type == TRANSACTION_TRANSFER_IN:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This is where a transfer arrived. Open the transfer itself instead",
+        )
+    if transaction.fee_for_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This is a transfer's fee. Open the transfer to change or delete it",
         )
 
     
@@ -692,7 +774,7 @@ def update_transaction(
     db: Session = Depends(get_db),
 ) -> TransactionResponse:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
-    _refuse_arrival(transaction)
+    _refuse_transfer_part(transaction)
     if transaction.type == TRANSACTION_TRANSFER_OUT:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -846,6 +928,7 @@ def _entry_summary(entry: TransactionResponse) -> str:
         return (
             f"Transfer · {entry.currency} {entry.amount} · {day.day} {day:%b %Y} · "
             f"{entry.wallet_name} → {entry.to_wallet_name}"
+            + (f" · fee {entry.currency} {entry.fee}" if entry.fee is not None else "")
         )
 
     if entry.type == TRANSACTION_OPENING:
@@ -890,7 +973,7 @@ def send_delete_code(
     db: Session = Depends(get_db),
 ) -> EmailCodeResponse:
     transaction = get_owned_transaction(transaction_id, user, db)
-    _refuse_arrival(transaction)
+    _refuse_transfer_part(transaction)
     _require_current(transaction, db)
     refuse_if_too_soon(db, user, DELETE_TRANSACTION, transaction.id)
 
@@ -931,12 +1014,14 @@ def delete_transaction(
     db: Session = Depends(get_db),
 ) -> None:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
-    _refuse_arrival(transaction)
+    _refuse_transfer_part(transaction)
     _require_current(transaction, db)
     use_code(db, user, DELETE_TRANSACTION, transaction.id, payload.code)
 
-    # Deleting a transfer cancels both of its rows, so the money goes back.
+    # Deleting a transfer cancels both of its rows and its fee, so the money
+    # goes back. The fee came out of the wallet the transfer left.
     arrival = _arrival(transaction, db)
+    fee = _fee(transaction, db)
     wallet_ids = {transaction.wallet_id}
     if arrival is not None:
         wallet_ids.add(arrival.wallet_id)
@@ -945,6 +1030,8 @@ def delete_transaction(
     db.add(_reverse(transaction, wallets, payload.reason))
     if arrival is not None:
         db.add(_reverse(arrival, wallets, payload.reason))
+    if fee is not None:
+        db.add(_reverse(fee, wallets, payload.reason))
     db.commit()
 
 
@@ -965,7 +1052,7 @@ def restore_transaction(
     db: Session = Depends(get_db),
 ) -> TransactionResponse:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
-    _refuse_arrival(transaction)
+    _refuse_transfer_part(transaction)
 
     if transaction.reverses_id is not None:
         raise HTTPException(
@@ -995,8 +1082,10 @@ def restore_transaction(
     # A transfer comes back with the row where its money arrived. If that
     # wallet has since been deleted, there is nowhere for it to arrive.
     arrival = None
+    fee = None
     if transaction.type == TRANSACTION_TRANSFER_OUT:
         arrival = _arrival(transaction, db)
+        fee = _fee(transaction, db)
         if arrival is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1029,6 +1118,25 @@ def restore_transaction(
     if arrival is not None:
         db.flush()
         db.add(_arrive(restored, arrival.wallet_id, arrival.amount, wallets))
+    # Its fee comes back with it, as a restored copy of the fee that was deleted.
+    if fee is not None:
+        db.add(
+            Transaction(
+                user_id=fee.user_id,
+                wallet_id=fee.wallet_id,
+                category_id=fee.category_id,
+                amount=fee.amount,
+                type=fee.type,
+                description=fee.description,
+                transaction_date=fee.transaction_date,
+                replaces_id=fee.id,
+                origin_id=fee.origin_id or fee.id,
+                reason=payload.reason,
+                is_restoration=True,
+                fee_for_id=restored.id,
+            )
+        )
+        wallets[fee.wallet_id].balance += _effect(fee.type, fee.amount)
     db.commit()
 
     return _load_response(restored.id, db)
@@ -1234,16 +1342,10 @@ def create_transfer(
     )
     received = _amount_received(source, destination, payload.amount, payload.to_amount)
 
+    # The fee is filed under Transfer Fee, which is made the first time.
     fee_category = None
     if payload.fee is not None:
-        if payload.fee_category_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Choose a category for the fee",
-            )
-        fee_category = _check_category(
-            payload.fee_category_id, TRANSACTION_EXPENSE, source, user, db
-        )
+        fee_category = _transfer_fee_category(source, user, db)
 
     wallets = _lock_wallets({source.id, destination.id}, db)
 
@@ -1263,20 +1365,7 @@ def create_transfer(
     # The fee is an ordinary expense, so it counts towards spending and the
     # Budget tab, which the transfer itself never does.
     if fee_category is not None:
-        db.add(
-            Transaction(
-                user_id=user.id,
-                wallet_id=source.id,
-                category_id=fee_category.id,
-                amount=payload.fee,
-                type=TRANSACTION_EXPENSE,
-                description=f"Fee for a transfer to {destination.name}"[:255],
-                transaction_date=payload.transaction_date,
-                other_name="Transfer fee" if is_others(fee_category) else None,
-            )
-        )
-        wallets[source.id].balance += _effect(TRANSACTION_EXPENSE, payload.fee)
-
+        db.add(_charge_fee(departure, destination, payload.fee, fee_category, wallets))
     db.commit()
 
     return _load_response(departure.id, db)
@@ -1299,7 +1388,7 @@ def update_transfer(
     db: Session = Depends(get_db),
 ) -> TransactionResponse:
     departure = get_owned_transaction(transfer_id, user, db, for_update=True)
-    _refuse_arrival(departure)
+    _refuse_transfer_part(departure)
     if departure.type != TRANSACTION_TRANSFER_OUT:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1345,6 +1434,10 @@ def update_transfer(
         if "description" in payload.model_fields_set
         else departure.description
     )
+    # The same for the fee: left out keeps it, null removes it.
+    fee = _fee(departure, db)
+    old_fee = fee.amount if fee is not None else None
+    new_fee = payload.fee if "fee" in payload.model_fields_set else old_fee
 
     unchanged = (
         source.id == departure.wallet_id
@@ -1353,15 +1446,21 @@ def update_transfer(
         and received == arrival.amount
         and new_date == departure.transaction_date
         and new_description == departure.description
+        and new_fee == old_fee
     )
     if unchanged:
         return _load_response(departure.id, db)
 
+    fee_category = (
+        _transfer_fee_category(source, user, db) if new_fee is not None else None
+    )
     wallets = _lock_wallets(
         {old_source.id, old_destination.id, source.id, destination.id}, db
     )
     db.add(_reverse(departure, wallets, payload.reason))
     db.add(_reverse(arrival, wallets, payload.reason))
+    if fee is not None:
+        db.add(_reverse(fee, wallets, payload.reason))
 
     correction = Transaction(
         user_id=user.id,
@@ -1377,6 +1476,10 @@ def update_transfer(
     db.flush()
     wallets[source.id].balance += _effect(TRANSACTION_TRANSFER_OUT, amount)
     db.add(_arrive(correction, destination.id, received, wallets))
+    # A fee the transfer keeps is corrected along with it, so its history
+    # carries on; a fee added now starts one of its own.
+    if fee_category is not None:
+        db.add(_charge_fee(correction, destination, new_fee, fee_category, wallets, replaces=fee))
     db.commit()
-
+    
     return _load_response(correction.id, db)

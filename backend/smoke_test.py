@@ -1792,36 +1792,45 @@ def main() -> None:
         "POST",
         "/transfers",
         token_a,
-        {**move, "amount": "100.00", "fee": "15.00", "fee_category_id": groceries["id"]},
+        {**move, "amount": "100.00", "fee": "15.00"},
     )
-    fee_rows = [
-        row
-        for row in call(
-            "GET",
-            f"/trackers/{four}/transactions?start_date=2025-04-01&end_date=2025-04-30",
-            token_a,
-        )[1]
-        or []
-        if row["type"] == "expense"
-    ]
+
+    def expense_rows():
+        return [
+            row
+            for row in call(
+                "GET",
+                f"/trackers/{four}/transactions?start_date=2025-04-01&end_date=2025-04-30",
+                token_a,
+            )[1]
+            or []
+            if row["type"] == "expense"
+        ]
+
+    fee_rows = expense_rows()
     check(
-        "a fee is recorded as an expense from the sending wallet",
+        "a fee is recorded as an expense from the sending wallet, under Transfer Fee",
         (
             status,
+            (with_fee or {}).get("fee"),
             balances().get("Spending"),
-            [(row["wallet_name"], row["amount"], row["category_name"]) for row in fee_rows],
+            [
+                (row["wallet_name"], row["amount"], row["category_name"], row["fee_for_id"] == id_of(with_fee))
+                for row in fee_rows
+            ],
         ),
-        (201, "25.00", [("Spending", "15.00", "Groceries")]),
+        (201, "15.00", "25.00", [("Spending", "15.00", "Transfer Fee", True)]),
     )
-    status, _ = call("POST", "/transfers", token_a, {**move, "fee": "15.00"})
-    check("a fee needs a category", status, 422)
+    fee_row = fee_rows[0] if fee_rows else {}
+    status, _ = call("PATCH", f"/transactions/{fee_row.get('id')}", token_a, {"amount": "1.00"})
+    check("a transfer's fee is not changed by itself", status, 409)
 
     status, body = call(
         "GET", f"/trackers/{four}/budget?start_date=2025-04-01&end_date=2025-04-30", token_a
     )
     check(
         "a transfer never counts towards the budget, though its fee does",
-        budget_row(body or {}, "expense", "Groceries").get("actual"),
+        budget_row(body or {}, "expense", "Transfer Fee").get("actual"),
         "15.00",
     )
 
@@ -1892,6 +1901,51 @@ def main() -> None:
         (200, "Savings", before),
     )
 
+    def current_fees(transfer):
+        return [
+            (row["amount"], row["is_deleted"])
+            for row in expense_rows()
+            if row["fee_for_id"] == id_of(transfer)
+        ]
+
+    status, refeed = call(
+        "PATCH", f"/transfers/{id_of(with_fee)}", token_a, {"fee": "20.00", "reason": "Bank charged more"}
+    )
+    check(
+        "a transfer's fee is corrected along with it",
+        (status, (refeed or {}).get("fee"), balances().get("Spending"), current_fees(refeed), current_fees(with_fee)),
+        (200, "20.00", "270.00", [("20.00", False)], []),
+    )
+    status, unfeed = call("PATCH", f"/transfers/{id_of(refeed)}", token_a, {"fee": None})
+    check(
+        "and removed by sending no fee, which deletes it",
+        (status, (unfeed or {}).get("fee"), balances().get("Spending"), current_fees(refeed)),
+        (200, None, "290.00", [("20.00", True)]),
+    )
+    status, feed = call("PATCH", f"/transfers/{id_of(unfeed)}", token_a, {"fee": "5.00"})
+    added = [row for row in expense_rows() if row["fee_for_id"] == id_of(feed)]
+    check(
+        "a fee can be added while correcting, under the same Transfer Fee",
+        (
+            status,
+            (feed or {}).get("fee"),
+            balances().get("Spending"),
+            [(row["category_id"] == fee_row.get("category_id"), row["replaces_id"]) for row in added],
+        ),
+        (200, "5.00", "285.00", [(True, None)]),
+    )
+    check(
+        "deleting a transfer deletes its fee too",
+        (delete_entry(id_of(feed)), balances().get("Spending"), balances().get("Savings"), current_fees(feed)),
+        (204, "390.00", "50.00", [("5.00", True)]),
+    )
+    status, back = call("POST", f"/transactions/{id_of(feed)}/restore", token_a, {})
+    check(
+        "and restoring it brings the fee back",
+        (status, (back or {}).get("fee"), balances().get("Spending"), current_fees(back)),
+        (200, "5.00", "285.00", [("5.00", False)]),
+    )
+    
     status, _ = call("DELETE", f"/wallets/{id_of(savings)}", token_a)
     check("a wallet a transfer went to cannot be deleted", status, 409)
 

@@ -33,6 +33,9 @@ TRANSACTION_OPENING = "opening"
 # they count towards balances but never towards income, spending or budgets.
 TRANSACTION_TRANSFER_OUT = "transfer_out"
 TRANSACTION_TRANSFER_IN = "transfer_in"
+# Every transfer fee is filed under this expense category, made in a tracker
+# the first time one of its transfers has a fee.
+TRANSFER_FEE_CATEGORY_NAME = "Transfer Fee"
 
 class User(Base):
     __tablename__ = "users"
@@ -182,6 +185,12 @@ class Transaction(Base):
     # wallet. The leaving row stands for the whole transfer in lists and
     # history; this one is corrected, deleted and restored along with it.
     transfer_out_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, unique=True, index=True
+    )
+    # On a transfer's fee: the row where that transfer left its wallet. The fee
+    # is an ordinary expense under Transfer Fee, but it is corrected, deleted
+    # and restored only along with its transfer.
+    fee_for_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, unique=True, index=True
     )
 
