@@ -294,7 +294,7 @@ fun TrackerScreen(
         // server, whose refusal appears in the "That didn't work" dialog.
         // Deleted entries no longer count, so they don't stand in the way.
         val entryCount = state.transactions.count {
-            it.walletId == pendingDelete.id &&
+            (it.walletId == pendingDelete.id || it.toWalletId == pendingDelete.id) &&
                     it.entryType != EntryType.Opening &&
                     !it.isDeleted
         }
@@ -668,6 +668,7 @@ private fun EntryList(
                     entry = entry,
                     showWallet = state.selectedWalletId == null,
                     showCurrency = state.showsCurrency,
+                    forWalletId = state.selectedWalletId,
                     onClick = { onEntryClick(entry) },
                 )
                 HorizontalDivider()
@@ -681,11 +682,13 @@ private fun EntryRow(
     entry: TransactionResponse,
     showWallet: Boolean,
     showCurrency: Boolean,
+    forWalletId: Int?,
     onClick: () -> Unit,
 ) {
     val title = entryTitle(entry)
     val details = listOfNotNull(
-        entry.walletName.takeIf { showWallet },
+        // A transfer's title already names both of its wallets.
+        entry.walletName.takeIf { showWallet && entry.entryType != EntryType.Transfer },
         entry.description?.takeIf { it != title },
     ).joinToString(" · ")
 
@@ -730,7 +733,7 @@ private fun EntryRow(
         }
         Spacer(Modifier.width(12.dp))
         Text(
-            text = amountText(entry, showCurrency),
+            text = amountText(entry, showCurrency, forWalletId),
             style = MaterialTheme.typography.bodyLarge.withDeletedStyle(entry),
             color = amountColor(entry),
         )
@@ -769,12 +772,22 @@ private fun OverviewTable(
 
     val rangeHasEnded = state.range.end.isBefore(LocalDate.now())
     val currentBalances = state.wallets.associate { it.id to it.balance }
+    // The two transfer columns only appear once money has moved between
+    // wallets in the range, so a tracker without transfers looks as before.
+    val showsTransfers = summary.wallets.any { row ->
+        listOf(row.transfersIn, row.transfersOut)
+            .any { (it.toBigDecimalOrNull()?.signum() ?: 0) != 0 }
+    }
 
     val headers = buildList {
         add("Wallet")
         add("Opening Balance")
         add("Income")
         add("Expenses")
+        if (showsTransfers) {
+            add("Transfers In")
+            add("Transfers Out")
+        }
         if (rangeHasEnded) add("Ending Balance")
         add("Current Balance")
     }
@@ -805,9 +818,12 @@ private fun OverviewTable(
                         opening = row.opening,
                         income = row.income,
                         expenses = row.expenses,
+                        transfersIn = row.transfersIn,
+                        transfersOut = row.transfersOut,
                         ending = row.ending,
                         current = currentBalances[row.walletId] ?: row.ending,
                         rangeHasEnded = rangeHasEnded,
+                        showsTransfers = showsTransfers,
                     ),
                     isBold = row.walletId == state.selectedWalletId,
                 )
@@ -829,26 +845,33 @@ private fun OverviewTable(
                         opening = total.opening,
                         income = total.income,
                         expenses = total.expenses,
+                        transfersIn = total.transfersIn,
+                        transfersOut = total.transfersOut,
                         ending = total.ending,
                         current = currentTotal.toPlainString(),
                         rangeHasEnded = rangeHasEnded,
+                        showsTransfers = showsTransfers,
                     ),
                     isBold = true,
                 )
             }
         }
 
+        val sum = if (showsTransfers) {
+            "Opening + Income − Expenses + Transfers In − Transfers Out"
+        } else {
+            "Opening + Income − Expenses"
+        }
         Text(
             text = if (rangeHasEnded) {
                 "Opening Balance is what each wallet held at the start of " +
                         "${state.range.start.asDayLabel()}, and Ending Balance what it " +
                         "held at the end of ${state.range.end.asDayLabel()}. " +
-                        "Opening + Income − Expenses = Ending. Current Balance is what " +
-                        "it holds today."
+                        "$sum = Ending. Current Balance is what it holds today."
             } else {
                 "Opening Balance is what each wallet held at the start of " +
                         "${state.range.start.asDayLabel()}. " +
-                        "Opening + Income − Expenses = Current Balance."
+                        "$sum = Current Balance."
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -857,20 +880,30 @@ private fun OverviewTable(
     }
 }
 
-/** The cells for one table row, with the Ending Balance column only for a finished range. */
+/**
+ * The cells for one table row, with the transfer columns only when the range
+ * has transfers, and the Ending Balance column only for a finished range.
+ */
 private fun balanceCells(
     label: String,
     opening: String,
     income: String,
     expenses: String,
+    transfersIn: String,
+    transfersOut: String,
     ending: String,
     current: String,
     rangeHasEnded: Boolean,
+    showsTransfers: Boolean,
 ): List<String> = buildList {
     add(label)
     add(formatMoney(opening))
     add(dashIfZero(income))
     add(dashIfZero(expenses))
+    if (showsTransfers) {
+        add(dashIfZero(transfersIn))
+        add(dashIfZero(transfersOut))
+    }
     if (rangeHasEnded) {
         add(formatMoney(ending))
         add(formatMoney(current))

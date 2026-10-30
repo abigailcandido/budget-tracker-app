@@ -97,7 +97,10 @@ data class TrackerUiState(
     /** Entries in the range, after the wallet and tab filters, still newest first. */
     val visibleTransactions: List<TransactionResponse>
         get() = transactions.filter { entry ->
-            (selectedWalletId == null || entry.walletId == selectedWalletId) &&
+            // A transfer belongs to both of its wallets.
+            (selectedWalletId == null ||
+                    entry.walletId == selectedWalletId ||
+                    entry.toWalletId == selectedWalletId) &&
                     filter.matches(entry.entryType)
         }
 
@@ -653,7 +656,12 @@ class TrackerViewModel(
 
             when (val result = transactionRepository.restore(detail.entry.id, detail.restoreReason)) {
                 is ApiResult.Success -> closeDetailAndRefresh(
-                    notice = "Restored. It counts towards ${result.data.walletName}'s balance again.",
+                    notice = if (result.data.entryType == EntryType.Transfer) {
+                        "Restored. The money moves from ${result.data.walletName} to " +
+                                "${result.data.toWalletName} again."
+                    } else {
+                        "Restored. It counts towards ${result.data.walletName}'s balance again."
+                    },
                 )
                 is ApiResult.Failure -> updateDetail {
                     it.copy(isRestoring = false, restoreError = result.message)
@@ -834,6 +842,7 @@ class TrackerViewModel(
                     },
                     walletId = wallet.id,
                     date = if (current.range.end.isBefore(today)) current.range.end else today,
+                    walletCurrencies = current.wallets.associate { it.id to it.currency },
                 ),
             )
         }
@@ -846,6 +855,7 @@ class TrackerViewModel(
      */
     private fun openFormFor(entry: TransactionResponse) {
         val type = entry.entryType
+        val isTransfer = type == EntryType.Transfer
 
         _uiState.update {
             it.copy(
@@ -853,26 +863,38 @@ class TrackerViewModel(
                     editingId = entry.id,
                     type = type,
                     walletId = entry.walletId,
-                    currency = entry.currency,
+                    // A transfer can move to any two wallets, so its choices
+                    // are not limited to one currency.
+                    currency = entry.currency.takeIf { !isTransfer },
                     originalCategoryId = entry.categoryId,
                     otherName = entry.otherName.orEmpty(),
                     amount = entry.amount,
                     date = runCatching { LocalDate.parse(entry.transactionDate) }
                         .getOrDefault(LocalDate.now()),
                     note = entry.description.orEmpty(),
+                    toWalletId = entry.toWalletId,
+                    // Between wallets of one currency, what arrives is what
+                    // leaves, so there is nothing to show twice.
+                    toAmount = entry.toAmount
+                        .takeIf { entry.toCurrency != null && entry.toCurrency != entry.currency }
+                        .orEmpty(),
+                    walletCurrencies = it.wallets.associate { wallet -> wallet.id to wallet.currency },
                 ),
             )
         }
 
-        // An opening balance has no category, so there is nothing to load.
-        if (type != EntryType.Opening) loadEntryCategories(keepId = entry.categoryId)
+        // An opening balance has no category, and a transfer being corrected
+        // has no fee, so there is nothing to load for either.
+        if (type != EntryType.Opening && !isTransfer) loadEntryCategories(keepId = entry.categoryId)
     }
-
     fun retryEntryCategories() {
         loadEntryCategories(keepId = _uiState.value.entryForm?.originalCategoryId)
     }
 
-    /** Expense or Income. Only a new entry has the switch; a correction keeps its type. */
+    /**
+     * Expense, Income or Transfer. Only a new entry has the switch; a
+     * correction keeps its type.
+     */
     fun onEntryTypeChange(type: EntryType) {
         updateForm { form ->
             if (!form.isNew || form.isOpening || type == EntryType.Opening) {
@@ -880,25 +902,38 @@ class TrackerViewModel(
             } else {
                 // An expense category can't come along to an income, or the
                 // other way round, so the choice is cleared when it doesn't fit.
-                // Others is offered for both, so it stays.
+                // Others is offered for both, so it stays. A transfer's
+                // category is for its fee, which is an expense.
                 val keepsCategory = form.topCategoryId == OTHERS_CHOICE ||
                         form.categoriesFor(type).any { it.id == form.topCategoryId }
+                // A transfer starts off going to the first other wallet.
+                val toWalletId = form.toWalletId?.takeIf { it != form.walletId }
+                    ?: _uiState.value.wallets.firstOrNull { it.id != form.walletId }?.id
                 form.copy(
                     type = type,
                     topCategoryId = form.topCategoryId.takeIf { keepsCategory },
                     subcategoryId = form.subcategoryId.takeIf { keepsCategory },
+                    toWalletId = toWalletId,
                     error = null,
                 )
             }
         }
     }
 
+    /**
+     * The wallet the entry is in, or where a transfer leaves from. Choosing
+     * the wallet a transfer goes to swaps the two round.
+     */
     fun onEntryWalletChange(walletId: Int) {
         updateForm { form ->
-            if (form.isOpening) form else form.copy(walletId = walletId, error = null)
+            when {
+                form.isOpening -> form
+                form.isTransfer && walletId == form.toWalletId ->
+                    form.copy(walletId = walletId, toWalletId = form.walletId, error = null)
+                else -> form.copy(walletId = walletId, error = null)
+            }
         }
     }
-
     /**
      * A top-level category, or Others, from the Category field. Choosing a
      * different one empties the Sub-category field, since its choices change.
@@ -1007,6 +1042,10 @@ class TrackerViewModel(
         val form = _uiState.value.entryForm ?: return
         val walletId = form.walletId ?: return
         if (!form.canSave) return
+        if (form.isTransfer) {
+            saveTransfer(form)
+            return
+        }
 
         viewModelScope.launch {
             updateForm { it.copy(isSaving = true, error = null) }
@@ -1096,6 +1135,101 @@ class TrackerViewModel(
 
                 // canSave already guarantees a category, so this never happens.
                 else -> ApiResult.Failure("Choose a category")
+            }
+
+            when (result) {
+                is ApiResult.Success -> closeEntryFormAndRefresh()
+                is ApiResult.Failure -> updateForm {
+                    it.copy(isSaving = false, error = result.message)
+                }
+            }
+        }
+    }
+
+    /** The wallet a transfer goes to. Choosing the one it leaves from swaps the two round. */
+    fun onEntryToWalletChange(walletId: Int) {
+        updateForm { form ->
+            when {
+                !form.isTransfer -> form
+                walletId == form.walletId ->
+                    form.copy(walletId = form.toWalletId, toWalletId = walletId, error = null)
+                else -> form.copy(toWalletId = walletId, error = null)
+            }
+        }
+    }
+
+    /** What arrives, when a transfer goes between two currencies. */
+    fun onEntryToAmountChange(value: String) {
+        updateForm { form ->
+            if (form.acceptsAmount(value)) form.copy(toAmount = value, error = null) else form
+        }
+    }
+
+    /** The optional fee on a new transfer. */
+    fun onEntryFeeChange(value: String) {
+        updateForm { form ->
+            if (form.acceptsAmount(value)) form.copy(fee = value, error = null) else form
+        }
+    }
+
+    /**
+     * Saves a new transfer, or corrects one as a whole. A fee is only on a
+     * new transfer, and needs its category fetched first when it is Others.
+     */
+    private fun saveTransfer(form: EntryForm) {
+        val fromWalletId = form.walletId ?: return
+        val toWalletId = form.toWalletId ?: return
+
+        viewModelScope.launch {
+            updateForm { it.copy(isSaving = true, error = null) }
+
+            val date = form.date.toString()
+            // Between wallets of one currency, what arrives is what leaves.
+            val toAmount = form.toAmount.takeIf { form.needsAmountReceived }
+
+            val feeCategoryId: Int? = when {
+                !form.hasFee -> null
+                form.isOthersChosen -> {
+                    when (
+                        val others = categoryRepository.othersCategory(
+                            trackerId,
+                            CategoryKind.Expense,
+                            form.othersParentId,
+                        )
+                    ) {
+                        is ApiResult.Success -> others.data.id
+                        is ApiResult.Failure -> {
+                            updateForm { it.copy(isSaving = false, error = others.message) }
+                            return@launch
+                        }
+                    }
+                }
+                else -> form.leafCategoryId
+            }
+
+            val editingId = form.editingId
+            val result = if (editingId != null) {
+                transactionRepository.updateTransfer(
+                    transferId = editingId,
+                    fromWalletId = fromWalletId,
+                    toWalletId = toWalletId,
+                    amount = form.amount,
+                    toAmount = toAmount,
+                    date = date,
+                    description = form.note,
+                    reason = form.reason,
+                )
+            } else {
+                transactionRepository.createTransfer(
+                    fromWalletId = fromWalletId,
+                    toWalletId = toWalletId,
+                    amount = form.amount,
+                    toAmount = toAmount,
+                    date = date,
+                    description = form.note,
+                    fee = form.fee.takeIf { form.hasFee },
+                    feeCategoryId = feeCategoryId,
+                )
             }
 
             when (result) {

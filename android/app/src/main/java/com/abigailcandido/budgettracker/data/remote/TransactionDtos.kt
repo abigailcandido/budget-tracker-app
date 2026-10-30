@@ -7,7 +7,10 @@ import kotlinx.serialization.Serializable
 enum class EntryType(val apiValue: String) {
     Expense("expense"),
     Income("income"),
-    Opening("opening");
+    Opening("opening"),
+    // Money moved between two wallets. Only the row where it left is listed;
+    // where it arrived comes with it, as toWallet and toAmount.
+    Transfer("transfer_out");
 
     companion object {
         fun fromApi(value: String): EntryType =
@@ -68,6 +71,33 @@ data class TransactionRestoreRequest(
 )
 
 @Serializable
+data class TransferCreateRequest(
+    @SerialName("from_wallet_id") val fromWalletId: Int,
+    @SerialName("to_wallet_id") val toWalletId: Int,
+    val amount: String,
+    // Only between two currencies: what arrives, in the other wallet's currency.
+    @SerialName("to_amount") val toAmount: String? = null,
+    @SerialName("transaction_date") val transactionDate: String,
+    val description: String? = null,
+    // Optional: a charge for the transfer, recorded as an expense of its own.
+    val fee: String? = null,
+    @SerialName("fee_category_id") val feeCategoryId: Int? = null,
+)
+
+@Serializable
+data class TransferUpdateRequest(
+    @SerialName("from_wallet_id") val fromWalletId: Int,
+    @SerialName("to_wallet_id") val toWalletId: Int,
+    val amount: String,
+    // Left out between wallets of one currency, where what arrives is what leaves.
+    @SerialName("to_amount") val toAmount: String? = null,
+    @SerialName("transaction_date") val transactionDate: String,
+    // No default, so it is always sent, null included, and a cleared note is cleared.
+    val description: String?,
+    val reason: String? = null,
+)
+
+@Serializable
 data class PromoteOtherRequest(
     // Left out to use the entry's own Others name.
     val name: String? = null,
@@ -123,6 +153,12 @@ data class TransactionResponse(
     // On a reversal: why the entry was corrected or deleted. On a restored
     // entry: why it was restored.
     val reason: String? = null,
+    // On a transfer: the wallet the money went to, and what arrived there in
+    // that wallet's currency.
+    @SerialName("to_wallet_id") val toWalletId: Int? = null,
+    @SerialName("to_wallet_name") val toWalletName: String? = null,
+    @SerialName("to_currency") val toCurrency: String? = null,
+    @SerialName("to_amount") val toAmount: String? = null,
 )
 
 val TransactionResponse.entryType: EntryType
@@ -140,6 +176,8 @@ data class WalletSummary(
     val opening: String,
     val income: String,
     val expenses: String,
+    @SerialName("transfers_in") val transfersIn: String = "0.00",
+    @SerialName("transfers_out") val transfersOut: String = "0.00",
     val ending: String,
 )
 
@@ -149,6 +187,8 @@ data class CurrencyTotal(
     val opening: String,
     val income: String,
     val expenses: String,
+    @SerialName("transfers_in") val transfersIn: String = "0.00",
+    @SerialName("transfers_out") val transfersOut: String = "0.00",
     val ending: String,
 )
 

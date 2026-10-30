@@ -48,7 +48,7 @@ import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import java.time.LocalDate
 
 /** Which chooser is open on the page, if any. */
-private enum class Picker { Wallet, Category, Subcategory, Date }
+private enum class Picker { Wallet, ToWallet, Category, Subcategory, Date }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,6 +67,9 @@ fun EntryEditScreen(
     onAddAsGlobalChange: (Boolean) -> Unit,
     onAddSubcategoryAsGlobalChange: (Boolean) -> Unit,
     onAmountChange: (String) -> Unit,
+    onToWalletChange: (Int) -> Unit,
+    onToAmountChange: (String) -> Unit,
+    onFeeChange: (String) -> Unit,
     onDateChange: (LocalDate) -> Unit,
     onNoteChange: (String) -> Unit,
     onReasonChange: (String) -> Unit,
@@ -92,6 +95,7 @@ fun EntryEditScreen(
         wallets.filter { it.currency == form.currency }
     }
     val wallet = wallets.firstOrNull { it.id == form.walletId }
+    val toWallet = wallets.firstOrNull { it.id == form.toWalletId }
     val currency = wallet?.currency ?: form.currency.orEmpty()
     val selectedCategory = form.selectedCategory
     val selectedSubcategory = selectedCategory?.subcategories?.firstOrNull { it.id == form.subcategoryId }
@@ -105,6 +109,7 @@ fun EntryEditScreen(
                         when {
                             form.isNew -> "Add transaction"
                             form.isOpening -> "Edit opening balance"
+                            form.isTransfer -> "Edit transfer"
                             form.type == EntryType.Income -> "Edit income"
                             else -> "Edit expense"
                         }
@@ -142,11 +147,17 @@ fun EntryEditScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Only a new entry chooses between expense and income. A correction
-            // keeps its type, which the page title names instead.
+            // Only a new entry chooses between expense, income and transfer. A
+            // correction keeps its type, which the page title names instead. A
+            // transfer needs a second wallet to go to.
             if (form.isNew && !form.isOpening) {
+                val types = buildList {
+                    add(EntryType.Expense to "Expense")
+                    add(EntryType.Income to "Income")
+                    if (wallets.size > 1) add(EntryType.Transfer to "Transfer")
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(EntryType.Expense to "Expense", EntryType.Income to "Income")
+                    types
                         .forEach { (type, label) ->
                             FilterChip(
                                 selected = form.type == type,
@@ -161,7 +172,7 @@ fun EntryEditScreen(
             OutlinedTextField(
                 value = form.amount,
                 onValueChange = onAmountChange,
-                label = { Text("Amount") },
+                label = { Text(if (form.isTransfer) "Amount sent" else "Amount") },
                 prefix = { Text("$currency ") },
                 placeholder = { Text("0.00") },
                 singleLine = true,
@@ -176,7 +187,7 @@ fun EntryEditScreen(
             )
 
             PickerField(
-                label = "Wallet",
+                label = if (form.isTransfer) "From" else "Wallet",
                 value = wallet?.let { walletLabel(it) }.orEmpty(),
                 // An opening balance belongs to the wallet it opened.
                 enabled = !form.isBusy && !form.isOpening,
@@ -188,7 +199,72 @@ fun EntryEditScreen(
                 },
             )
 
-            if (!form.isOpening) {
+            if (form.isTransfer) {
+                PickerField(
+                    label = "To",
+                    value = toWallet?.let { walletLabel(it) } ?: "Choose a wallet",
+                    enabled = !form.isBusy,
+                    onClick = { openPicker = Picker.ToWallet },
+                )
+
+                // Between two currencies, both amounts are typed: what leaves
+                // one wallet and what arrives in the other.
+                if (form.needsAmountReceived) {
+                    OutlinedTextField(
+                        value = form.toAmount,
+                        onValueChange = onToAmountChange,
+                        label = { Text("Amount received") },
+                        prefix = { Text("${toWallet?.currency.orEmpty()} ") },
+                        placeholder = { Text("0.00") },
+                        singleLine = true,
+                        enabled = !form.isBusy,
+                        supportingText = {
+                            Text("What arrives in ${toWallet?.name.orEmpty()}, in its own currency.")
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
+                // Only a new transfer has a fee. It is saved as an expense of
+                // its own, which is corrected or deleted like any other.
+                if (form.isNew) {
+                    OutlinedTextField(
+                        value = form.fee,
+                        onValueChange = onFeeChange,
+                        label = { Text("Fee (optional)") },
+                        prefix = { Text("$currency ") },
+                        placeholder = { Text("0.00") },
+                        singleLine = true,
+                        enabled = !form.isBusy,
+                        supportingText = {
+                            Text(
+                                "Saved as an expense from ${wallet?.name.orEmpty()}, " +
+                                        "under the category you choose."
+                            )
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (form.hasFee) {
+                        CategorySection(
+                            form = form,
+                            selectedCategory = selectedCategory,
+                            selectedSubcategory = selectedSubcategory,
+                            onOpenCategory = { openPicker = Picker.Category },
+                            onOpenSubcategory = { openPicker = Picker.Subcategory },
+                            onOtherNameChange = onOtherNameChange,
+                            onUseCategoryMatch = onUseCategoryMatch,
+                            onAddToCategoriesChange = onAddToCategoriesChange,
+                            onWithSubcategoryChange = onWithSubcategoryChange,
+                            onSubcategoryNameChange = onSubcategoryNameChange,
+                            onAddAsGlobalChange = onAddAsGlobalChange,
+                            onAddSubcategoryAsGlobalChange = onAddSubcategoryAsGlobalChange,
+                            onRetry = onRetryCategories,
+                        )
+                    }
+                }
+            } else if (!form.isOpening) {
                 CategorySection(
                     form = form,
                     selectedCategory = selectedCategory,
@@ -259,6 +335,18 @@ fun EntryEditScreen(
             onSelect = { id ->
                 openPicker = null
                 onWalletChange(id)
+            },
+            onDismiss = { openPicker = null },
+        )
+
+        // The wallet the money goes to: any other wallet in the tracker.
+        Picker.ToWallet -> OptionDialog(
+            title = "Choose where it goes",
+            options = wallets.filter { it.id != form.walletId }.map { it.id to walletLabel(it) },
+            selectedId = form.toWalletId,
+            onSelect = { id ->
+                openPicker = null
+                onToWalletChange(id)
             },
             onDismiss = { openPicker = null },
         )
@@ -375,7 +463,8 @@ private fun CategorySection(
                     onClick = onOpenSubcategory,
                 )
             }
-            if (form.isOthersChosen) {
+            // A transfer fee under Others is simply called "Transfer fee".
+            if (form.isOthersChosen && !form.isTransfer) {
                 OtherNameField(
                     form = form,
                     onValueChange = onOtherNameChange,

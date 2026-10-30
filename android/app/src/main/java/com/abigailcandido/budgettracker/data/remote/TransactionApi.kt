@@ -65,6 +65,29 @@ class TransactionApi(private val client: HttpClient = ApiClient.httpClient) {
             }
         }
 
+    suspend fun createTransfer(
+        token: String,
+        request: TransferCreateRequest,
+    ): ApiResult<TransactionResponse> =
+        callReturningBody("Could not save the transfer") {
+            client.post("transfers") {
+                bearer(token)
+                setBody(request)
+            }
+        }
+
+    suspend fun updateTransfer(
+        token: String,
+        transferId: Int,
+        request: TransferUpdateRequest,
+    ): ApiResult<TransactionResponse> =
+        callReturningBody("Could not save your changes") {
+            client.patch("transfers/$transferId") {
+                bearer(token)
+                setBody(request)
+            }
+        }
+
     /** Emails a six-digit code that deleting this entry needs. */
     suspend fun deleteCode(token: String, transactionId: Int): ApiResult<EmailCodeResponse> =
         callReturningBody("Could not send the code") {

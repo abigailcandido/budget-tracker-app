@@ -112,6 +112,17 @@ data class EntryForm(
     val note: String = "",
     /** Why the entry is being corrected. Optional, and only asked when correcting. */
     val reason: String = "",
+    /** On a transfer: the wallet the money goes to. walletId is where it leaves. */
+    val toWalletId: Int? = null,
+    /** On a transfer between two currencies: what arrives, in the other wallet's currency. */
+    val toAmount: String = "",
+    /**
+     * On a new transfer: an optional fee, recorded as an expense of its own
+     * from the wallet the money leaves. The Category fields are its category.
+     */
+    val fee: String = "",
+    /** Each wallet's currency, so a transfer knows when it crosses currencies. */
+    val walletCurrencies: Map<Int, String> = emptyMap(),
     val categories: List<CategoryOption> = emptyList(),
     val isLoadingCategories: Boolean = false,
     val categoryLoadError: String? = null,
@@ -127,6 +138,20 @@ data class EntryForm(
 
     val isBusy: Boolean
         get() = isSaving
+
+    val isTransfer: Boolean
+        get() = type == EntryType.Transfer
+
+    /** Between two currencies, what arrives has to be typed as well. */
+    val needsAmountReceived: Boolean
+        get() = isTransfer &&
+                walletId != null &&
+                toWalletId != null &&
+                walletCurrencies[walletId] != walletCurrencies[toWalletId]
+
+    /** A fee above zero, which then needs a category. Only a new transfer has one. */
+    val hasFee: Boolean
+        get() = isTransfer && isNew && (fee.toBigDecimalOrNull()?.signum() ?: 0) > 0
 
     /** Expense categories for an expense, income categories for an income. */
     val availableCategories: List<CategoryOption>
@@ -251,7 +276,8 @@ data class EntryForm(
 
     fun categoriesFor(entryType: EntryType): List<CategoryOption> {
         val kind = when (entryType) {
-            EntryType.Expense -> CategoryKind.Expense
+            // A transfer's categories are for its fee, which is an expense.
+            EntryType.Expense, EntryType.Transfer -> CategoryKind.Expense
             EntryType.Income -> CategoryKind.Income
             EntryType.Opening -> return emptyList()
         }
@@ -272,11 +298,17 @@ data class EntryForm(
         get() {
             if (isBusy) return false
             val value = amount.toBigDecimalOrNull() ?: return false
-            return if (isOpening) {
+            return when {
                 // An opening balance of zero is deleted, not saved.
-                value.signum() != 0
-            } else {
-                value.signum() > 0 && walletId != null && hasCompleteCategory
+                isOpening -> value.signum() != 0
+                // Under Others, a fee is named "Transfer fee" by the server.
+                isTransfer -> value.signum() > 0 &&
+                        walletId != null &&
+                        toWalletId != null &&
+                        toWalletId != walletId &&
+                        (!needsAmountReceived || (toAmount.toBigDecimalOrNull()?.signum() ?: 0) > 0) &&
+                        (!hasFee || isOthersChosen || leafCategoryId != null)
+                else -> value.signum() > 0 && walletId != null && hasCompleteCategory
             }
         }
 }

@@ -13,6 +13,8 @@ import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.TransactionRestoreRequest
 import com.abigailcandido.budgettracker.data.remote.TrackerSummaryResponse
 import com.abigailcandido.budgettracker.data.remote.TransactionUpdateRequest
+import com.abigailcandido.budgettracker.data.remote.TransferCreateRequest
+import com.abigailcandido.budgettracker.data.remote.TransferUpdateRequest
 import java.time.LocalDate
 
 class TransactionRepository(
@@ -92,6 +94,64 @@ class TransactionRepository(
                     transactionDate = date,
                     description = description.cleaned(),
                     otherName = otherName.cleaned(),
+                    reason = reason.cleaned(),
+                ),
+            )
+        }
+
+    /**
+     * Moves money from one wallet of the tracker to another. Between two
+     * currencies, toAmount is what arrives. A fee becomes an expense of its own.
+     */
+    suspend fun createTransfer(
+        fromWalletId: Int,
+        toWalletId: Int,
+        amount: String,
+        toAmount: String?,
+        date: String,
+        description: String?,
+        fee: String?,
+        feeCategoryId: Int?,
+    ): ApiResult<TransactionResponse> =
+        tokenStore.withToken { token ->
+            val cleanFee = fee.cleaned()
+            api.createTransfer(
+                token,
+                TransferCreateRequest(
+                    fromWalletId = fromWalletId,
+                    toWalletId = toWalletId,
+                    amount = amount.trim(),
+                    toAmount = toAmount.cleaned(),
+                    transactionDate = date,
+                    description = description.cleaned(),
+                    fee = cleanFee,
+                    feeCategoryId = feeCategoryId.takeIf { cleanFee != null },
+                ),
+            )
+        }
+
+    /** Corrects a transfer as a whole. The corrected transfer has a new id. */
+    suspend fun updateTransfer(
+        transferId: Int,
+        fromWalletId: Int,
+        toWalletId: Int,
+        amount: String,
+        toAmount: String?,
+        date: String,
+        description: String?,
+        reason: String?,
+    ): ApiResult<TransactionResponse> =
+        tokenStore.withToken { token ->
+            api.updateTransfer(
+                token,
+                transferId,
+                TransferUpdateRequest(
+                    fromWalletId = fromWalletId,
+                    toWalletId = toWalletId,
+                    amount = amount.trim(),
+                    toAmount = toAmount.cleaned(),
+                    transactionDate = date,
+                    description = description.cleaned(),
                     reason = reason.cleaned(),
                 ),
             )

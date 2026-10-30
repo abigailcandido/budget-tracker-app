@@ -88,6 +88,7 @@ fun EntryDetailScreen(
 
     val entry = detail.entry
     val isOpening = entry.entryType == EntryType.Opening
+    val isTransfer = entry.entryType == EntryType.Transfer
     val deletion = detail.deletion
 
     Scaffold(
@@ -98,8 +99,10 @@ fun EntryDetailScreen(
                     Text(
                         when {
                             entry.isDeleted && isOpening -> "Deleted opening balance"
+                            entry.isDeleted && isTransfer -> "Deleted transfer"
                             entry.isDeleted -> "Deleted transaction"
                             isOpening -> "Opening balance"
+                            isTransfer -> "Transfer"
                             else -> "Transaction"
                         }
                     )
@@ -184,8 +187,17 @@ fun EntryDetailScreen(
 
             Spacer(Modifier.height(16.dp))
 
-            if (!isOpening) DetailRow("Category", entryTitle(entry))
-            DetailRow("Wallet", entry.walletName)
+            if (isTransfer) {
+                DetailRow("From", entry.walletName)
+                DetailRow("To", entry.toWalletName ?: "A deleted wallet")
+                // Between two currencies, each wallet moved by its own amount.
+                if (entry.toCurrency != null && entry.toCurrency != entry.currency) {
+                    DetailRow("Received", "${entry.toCurrency} ${formatMoney(entry.toAmount.orEmpty())}")
+                }
+            } else {
+                if (!isOpening) DetailRow("Category", entryTitle(entry))
+                DetailRow("Wallet", entry.walletName)
+            }
             DetailRow("Date", longDate(entry.transactionDate))
             DetailRow("Note", entry.description ?: "—")
             // A correction or a restore is a new row, so its time is when that happened.
@@ -276,10 +288,10 @@ private fun DeleteDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                if (entry.entryType == EntryType.Opening) {
-                    "Delete this opening balance?"
-                } else {
-                    "Delete this transaction?"
+                when (entry.entryType) {
+                    EntryType.Opening -> "Delete this opening balance?"
+                    EntryType.Transfer -> "Delete this transfer?"
+                    else -> "Delete this transaction?"
                 }
             )
         },
@@ -287,8 +299,11 @@ private fun DeleteDialog(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     text = "It stays in the list marked Deleted, with its history, and " +
-                            "stops counting towards ${entry.walletName}'s balance. You " +
-                            "can restore it later.",
+                            (if (entry.entryType == EntryType.Transfer) {
+                                "the money goes back to ${entry.walletName}. "
+                            } else {
+                                "stops counting towards ${entry.walletName}'s balance. "
+                            }) + "You can restore it later.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 OutlinedTextField(
@@ -375,18 +390,21 @@ private fun RestoreDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                if (entry.entryType == EntryType.Opening) {
-                    "Restore this opening balance?"
-                } else {
-                    "Restore this transaction?"
+                when (entry.entryType) {
+                    EntryType.Opening -> "Restore this opening balance?"
+                    EntryType.Transfer -> "Restore this transfer?"
+                    else -> "Restore this transaction?"
                 }
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    text = "It counts towards ${entry.walletName}'s balance again. " +
-                            "The deletion stays in its history.",
+                    text = (if (entry.entryType == EntryType.Transfer) {
+                        "The money moves from ${entry.walletName} to ${entry.toWalletName} again. "
+                    } else {
+                        "It counts towards ${entry.walletName}'s balance again. "
+                    }) + "The deletion stays in its history.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 OutlinedTextField(
@@ -643,7 +661,8 @@ private fun VersionItem(
     val entry = version.entry
     val details = listOfNotNull(
         entryTitle(entry).takeIf { entry.entryType != EntryType.Opening },
-        entry.walletName,
+        // A transfer's title already names both of its wallets.
+        entry.walletName.takeIf { entry.entryType != EntryType.Transfer },
         longDate(entry.transactionDate),
         entry.description,
     ).joinToString(" · ")
@@ -821,10 +840,21 @@ internal fun DeletedTag(modifier: Modifier = Modifier) {
 internal fun TextStyle.withDeletedStyle(entry: TransactionResponse): TextStyle =
     if (entry.isDeleted) copy(textDecoration = TextDecoration.LineThrough) else this
 
-/** The amount as the lists show it, with the currency when the tracker mixes them. */
-internal fun amountText(entry: TransactionResponse, showsCurrency: Boolean): String {
-    val amount = signedAmount(entry)
-    return if (showsCurrency) "${entry.currency} $amount" else amount
+/**
+ * The amount as the lists show it, with the currency when the tracker mixes
+ * them. Seen from the wallet a transfer went to, it is what arrived there.
+ */
+internal fun amountText(
+    entry: TransactionResponse,
+    showsCurrency: Boolean,
+    forWalletId: Int? = null,
+): String {
+    val amount = signedAmount(entry, forWalletId)
+    val arrived = entry.entryType == EntryType.Transfer &&
+            forWalletId != null &&
+            forWalletId == entry.toWalletId
+    val currency = if (arrived) entry.toCurrency ?: entry.currency else entry.currency
+    return if (showsCurrency) "$currency $amount" else amount
 }
 
 /** Income in the main colour and money owed in red; a deleted entry is greyed out. */

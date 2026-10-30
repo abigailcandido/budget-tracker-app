@@ -37,8 +37,10 @@ import com.abigailcandido.budgettracker.data.remote.BudgetTable
 import com.abigailcandido.budgettracker.data.remote.BudgetTotal
 import com.abigailcandido.budgettracker.data.remote.hasSubcategories
 
-private val CategoryColumnWidth = 140.dp
-private val BudgetAmountWidth = 100.dp
+// The four columns share the width between them, the Category column a little
+// more than each amount, so the whole table fits a phone held upright.
+private const val CategoryColumnWeight = 1.2f
+private const val AmountColumnWeight = 1f
 
 /**
  * The Budget tab: for each category, what was expected over the dates
@@ -171,7 +173,7 @@ private fun BudgetSection(
     }
 }
 
-/** Wider than a phone held upright, so it scrolls sideways like the Overview table. */
+/** Category, Expected, Actual and Difference, all four on screen without scrolling sideways. */
 @Composable
 private fun BudgetGrid(
     rows: List<BudgetRow>,
@@ -181,7 +183,7 @@ private fun BudgetGrid(
 ) {
     Column(
         modifier = Modifier
-            .horizontalScroll(rememberScrollState())
+            .fillMaxWidth()
             .padding(horizontal = 16.dp),
     ) {
         BudgetCells(
@@ -238,16 +240,22 @@ private fun BudgetCells(
     expectedIsAction: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
-    val style = if (isHeader) {
-        MaterialTheme.typography.labelMedium
-    } else {
-        MaterialTheme.typography.bodyMedium
+    val typography = MaterialTheme.typography
+    val style = if (isHeader) typography.labelMedium else typography.bodyMedium
+    // Long amounts are set a size or two smaller, so they fit their column
+    // whole instead of being cut off.
+    fun amountStyle(text: String) = when {
+        isHeader -> typography.labelMedium
+        text.length > 12 -> typography.labelSmall
+        text.length > 9 -> typography.bodySmall
+        else -> typography.bodyMedium
     }
     val weight = if (isBold) FontWeight.Bold else null
     val headerColor = MaterialTheme.colorScheme.onSurfaceVariant
 
     Row(
         modifier = Modifier
+            .fillMaxWidth()
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -260,11 +268,11 @@ private fun BudgetCells(
             color = if (isHeader || isMuted) headerColor else Color.Unspecified,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.width(CategoryColumnWidth),
+            modifier = Modifier.weight(CategoryColumnWeight),
         )
         Text(
             text = expected,
-            style = style,
+            style = amountStyle(expected),
             fontWeight = weight,
             color = when {
                 isHeader -> headerColor
@@ -273,20 +281,24 @@ private fun BudgetCells(
             },
             textAlign = TextAlign.End,
             maxLines = 1,
-            modifier = Modifier.width(BudgetAmountWidth),
+            modifier = Modifier
+                .weight(AmountColumnWeight)
+                .padding(start = 4.dp),
         )
         Text(
             text = actual,
-            style = style,
+            style = amountStyle(actual),
             fontWeight = weight,
             color = if (isHeader) headerColor else Color.Unspecified,
             textAlign = TextAlign.End,
             maxLines = 1,
-            modifier = Modifier.width(BudgetAmountWidth),
+            modifier = Modifier
+                .weight(AmountColumnWeight)
+                .padding(start = 4.dp),
         )
         Text(
             text = difference,
-            style = style,
+            style = amountStyle(difference),
             fontWeight = weight,
             color = when {
                 isHeader -> headerColor
@@ -296,7 +308,9 @@ private fun BudgetCells(
             },
             textAlign = TextAlign.End,
             maxLines = 1,
-            modifier = Modifier.width(BudgetAmountWidth),
+            modifier = Modifier
+                .weight(AmountColumnWeight)
+                .padding(start = 4.dp),
         )
     }
 }

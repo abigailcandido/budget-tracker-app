@@ -26,12 +26,22 @@ fun formatMoney(amount: String): String {
 fun isNegative(amount: String): Boolean =
     (amount.toBigDecimalOrNull()?.signum() ?: 0) < 0
 
-/** An expense shows with a minus, an income with a plus, an opening balance as it is. */
-fun signedAmount(entry: TransactionResponse): String = when (entry.entryType) {
-    EntryType.Expense -> MINUS + formatMoney(entry.amount)
-    EntryType.Income -> "+" + formatMoney(entry.amount)
-    EntryType.Opening -> formatMoney(entry.amount)
-}
+/**
+ * An expense shows with a minus, an income with a plus, an opening balance as
+ * it is. A transfer has no sign of its own, except seen from one of its
+ * wallets: a minus where it left, and what arrived, with a plus, where it went.
+ */
+fun signedAmount(entry: TransactionResponse, forWalletId: Int? = null): String =
+    when (entry.entryType) {
+        EntryType.Expense -> MINUS + formatMoney(entry.amount)
+        EntryType.Income -> "+" + formatMoney(entry.amount)
+        EntryType.Opening -> formatMoney(entry.amount)
+        EntryType.Transfer -> when (forWalletId) {
+            null -> formatMoney(entry.amount)
+            entry.toWalletId -> "+" + formatMoney(entry.toAmount ?: entry.amount)
+            else -> MINUS + formatMoney(entry.amount)
+        }
+    }
 
 /**
  * "Bills › Electricity", "Groceries", or "Opening balance". An entry under
@@ -40,6 +50,8 @@ fun signedAmount(entry: TransactionResponse): String = when (entry.entryType) {
 fun entryTitle(entry: TransactionResponse): String {
     val category = when {
         entry.entryType == EntryType.Opening -> return "Opening balance"
+        entry.entryType == EntryType.Transfer ->
+            return "Transfer: ${entry.walletName} → ${entry.toWalletName ?: "a deleted wallet"}"
         entry.parentCategoryName != null && entry.categoryName != null ->
             "${entry.parentCategoryName} › ${entry.categoryName}"
         else -> entry.categoryName ?: "No category"
@@ -74,4 +86,5 @@ fun entryTypeLabel(entry: TransactionResponse): String = when (entry.entryType) 
     EntryType.Expense -> "Expense"
     EntryType.Income -> "Income"
     EntryType.Opening -> "Opening balance"
+    EntryType.Transfer -> "Transfer"
 }
