@@ -1,4 +1,5 @@
-"""Income and expense entries, and the wallet balances they move.
+"""Income and expense entries, transfers between wallets, and the wallet
+balances they move.
 
 Every change to a transaction changes its wallet's balance in the same
 database transaction, so the cached balance and the transaction log can never
@@ -36,6 +37,8 @@ from app.models import (
     TRANSACTION_EXPENSE,
     TRANSACTION_INCOME,
     TRANSACTION_OPENING,
+    TRANSACTION_TRANSFER_IN,
+    TRANSACTION_TRANSFER_OUT,
     Category,
     TrackerCategory,
     Transaction,
@@ -59,6 +62,8 @@ from app.schemas import (
     TransactionResponse,
     TransactionRestoreRequest,
     TransactionUpdateRequest,
+    TransferCreateRequest,
+    TransferUpdateRequest,
     WalletSummaryResponse,
     format_money,
 )
@@ -72,6 +77,9 @@ Reversal = aliased(Transaction)
 # was reversed with nothing replacing it was deleted.
 Correction = aliased(Transaction)
 
+# On a transfer, the row where the money arrived, and that row's wallet.
+Arrival = aliased(Transaction)
+ArrivalWallet = aliased(Wallet)
 
 # --------------------------------------------------------------------------
 # Shared helpers
@@ -80,7 +88,7 @@ Correction = aliased(Transaction)
 
 def _effect(kind: str, amount: Decimal) -> Decimal:
     """How much a transaction adds to its wallet's balance."""
-    return -amount if kind == TRANSACTION_EXPENSE else amount
+    return -amount if kind in (TRANSACTION_EXPENSE, TRANSACTION_TRANSFER_OUT) else amount
 
 
 def _lock_wallets(wallet_ids: set[int], db: Session) -> dict[int, Wallet]:
@@ -254,15 +262,26 @@ def _other_name_for(category: Category | None, other_name: str | None) -> str | 
 
 def _described(db: Session):
     """A query returning each transaction with its wallet and category names,
-    and the ids of the reversal that cancelled it and the correction that
-    replaced it, if any."""
+    the ids of the reversal that cancelled it and the correction that
+    replaced it, if any, and, on a transfer, where the money arrived."""
     return (
-        db.query(Transaction, Wallet, Category, ParentCategory, Reversal.id, Correction.id)
+        db.query(
+            Transaction,
+            Wallet,
+            Category,
+            ParentCategory,
+            Reversal.id,
+            Correction.id,
+            Arrival,
+            ArrivalWallet,
+        )
         .join(Wallet, Transaction.wallet_id == Wallet.id)
         .outerjoin(Category, Transaction.category_id == Category.id)
         .outerjoin(ParentCategory, Category.parent_id == ParentCategory.id)
         .outerjoin(Reversal, Reversal.reverses_id == Transaction.id)
         .outerjoin(Correction, Correction.replaces_id == Transaction.id)
+        .outerjoin(Arrival, Arrival.transfer_out_id == Transaction.id)
+        .outerjoin(ArrivalWallet, Arrival.wallet_id == ArrivalWallet.id)
     )
 
 
@@ -273,6 +292,8 @@ def _to_response(
     parent: Category | None,
     reversal_id: int | None,
     correction_id: int | None,
+    arrival: Transaction | None = None,
+    arrival_wallet: Wallet | None = None,
 ) -> TransactionResponse:
     return TransactionResponse(
         id=transaction.id,
@@ -297,6 +318,10 @@ def _to_response(
         is_restoration=transaction.is_restoration,
         other_name=transaction.other_name,
         reason=transaction.reason,
+        to_wallet_id=arrival_wallet.id if arrival_wallet is not None else None,
+        to_wallet_name=arrival_wallet.name if arrival_wallet is not None else None,
+        to_currency=arrival_wallet.currency if arrival_wallet is not None else None,
+        to_amount=format_money(arrival.amount) if arrival is not None else None,
     )
 
 
@@ -305,6 +330,47 @@ def _load_response(transaction_id: int, db: Session) -> TransactionResponse:
     return _to_response(*row)
 
 
+def _arrival(departure: Transaction, db: Session) -> Transaction | None:
+    """On a transfer, the row where the money arrived. Locked, since it is
+    corrected, deleted and restored along with the transfer."""
+    return (
+        db.query(Transaction)
+        .filter(Transaction.transfer_out_id == departure.id)
+        .with_for_update()
+        .first()
+    )
+
+
+def _arrive(
+    departure: Transaction,
+    wallet_id: int,
+    amount: Decimal,
+    wallets: dict[int, Wallet],
+) -> Transaction:
+    """The row where a transfer arrives, applied to that wallet's balance.
+    The departure must already have its id."""
+    wallets[wallet_id].balance += amount
+    return Transaction(
+        user_id=departure.user_id,
+        wallet_id=wallet_id,
+        amount=amount,
+        type=TRANSACTION_TRANSFER_IN,
+        description=departure.description,
+        transaction_date=departure.transaction_date,
+        transfer_out_id=departure.id,
+    )
+
+
+def _refuse_arrival(transaction: Transaction) -> None:
+    """Where a transfer arrived goes wherever the transfer goes, so it is never
+    corrected, deleted or restored by itself."""
+    if transaction.type == TRANSACTION_TRANSFER_IN:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This is where a transfer arrived. Open the transfer itself instead",
+        )
+
+    
 def _reject_backwards_range(start_date: date | None, end_date: date | None) -> None:
     if start_date is not None and end_date is not None and start_date > end_date:
         raise HTTPException(
@@ -384,7 +450,12 @@ def list_transactions(
     _reject_backwards_range(start_date, end_date)
     tracker = get_owned_tracker(tracker_id, user, db)
 
-    query = _described(db).filter(Wallet.main_tracker_id == tracker.id)
+    # A transfer is listed once, by the row where the money left. Where it
+    # arrived comes with it, as to_wallet and to_amount.
+    query = _described(db).filter(
+        Wallet.main_tracker_id == tracker.id,
+        Transaction.type != TRANSACTION_TRANSFER_IN,
+    )
 
     if not include_adjustments:
         # The current version of each entry, and deleted entries, which stay in
@@ -408,7 +479,10 @@ def list_transactions(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Wallet not found",
             )
-        query = query.filter(Transaction.wallet_id == wallet.id)
+        # A transfer into the wallet counts as one of its entries too.
+        query = query.filter(
+            or_(Transaction.wallet_id == wallet.id, Arrival.wallet_id == wallet.id)
+        )
 
     rows = (
         query.order_by(
@@ -433,7 +507,7 @@ def list_transactions(
 @router.get(
     "/trackers/{tracker_id}/summary",
     response_model=TrackerSummaryResponse,
-    summary="Each wallet's opening, income, expenses and ending balance over a date range",
+    summary="Each wallet's opening, income, expenses, transfers and ending balance over a date range",
 )
 def tracker_summary(
     tracker_id: int,
@@ -453,7 +527,10 @@ def tracker_summary(
     )
 
     signed = case(
-        (Transaction.type == TRANSACTION_EXPENSE, -Transaction.amount),
+        (
+            Transaction.type.in_((TRANSACTION_EXPENSE, TRANSACTION_TRANSFER_OUT)),
+            -Transaction.amount,
+        ),
         else_=Transaction.amount,
     )
     in_range = Transaction.transaction_date >= start_date
@@ -461,18 +538,24 @@ def tracker_summary(
     def total(condition, value):
         return func.coalesce(func.sum(case((condition, value), else_=0)), 0)
 
+    def of_kind(kind):
+        return and_(in_range, Transaction.type == kind)
+
     # One pass over each wallet's entries up to the end of the range. Opening
     # is everything before the range began, plus an opening balance recorded
     # inside it — a wallet created mid-month starts the month with that amount
     # rather than with zero and an unexplained jump. With opening defined that
-    # way, opening + income - expenses is always exactly the ending balance.
+    # way, opening + income + transfers in - expenses - transfers out is always
+    # exactly the ending balance.
     rows = (
         db.query(
             Transaction.wallet_id,
             total(Transaction.transaction_date < start_date, signed),
-            total(and_(in_range, Transaction.type == TRANSACTION_OPENING), Transaction.amount),
-            total(and_(in_range, Transaction.type == TRANSACTION_INCOME), Transaction.amount),
-            total(and_(in_range, Transaction.type == TRANSACTION_EXPENSE), Transaction.amount),
+            total(of_kind(TRANSACTION_OPENING), Transaction.amount),
+            total(of_kind(TRANSACTION_INCOME), Transaction.amount),
+            total(of_kind(TRANSACTION_EXPENSE), Transaction.amount),
+            total(of_kind(TRANSACTION_TRANSFER_IN), Transaction.amount),
+            total(of_kind(TRANSACTION_TRANSFER_OUT), Transaction.amount),
         )
         .join(Wallet, Transaction.wallet_id == Wallet.id)
         .filter(
@@ -483,8 +566,14 @@ def tracker_summary(
         .all()
     )
     figures = {
-        wallet_id: (Decimal(before) + Decimal(opened), Decimal(income), Decimal(spent))
-        for wallet_id, before, opened, income, spent in rows
+        wallet_id: (
+            Decimal(before) + Decimal(opened),
+            Decimal(income),
+            Decimal(spent),
+            Decimal(moved_in),
+            Decimal(moved_out),
+        )
+        for wallet_id, before, opened, income, spent, moved_in, moved_out in rows
     }
 
     wallet_rows: list[WalletSummaryResponse] = []
@@ -496,10 +585,10 @@ def tracker_summary(
         if wallet.id not in figures and wallet.created_at.date() > end_date:
             continue
 
-        opening, income, expenses = figures.get(
-            wallet.id, (Decimal("0"), Decimal("0"), Decimal("0"))
+        opening, income, expenses, transfers_in, transfers_out = figures.get(
+            wallet.id, (Decimal("0"),) * 5
         )
-        ending = opening + income - expenses
+        ending = opening + income + transfers_in - expenses - transfers_out
 
         wallet_rows.append(
             WalletSummaryResponse(
@@ -509,12 +598,16 @@ def tracker_summary(
                 opening=format_money(opening),
                 income=format_money(income),
                 expenses=format_money(expenses),
+                transfers_in=format_money(transfers_in),
+                transfers_out=format_money(transfers_out),
                 ending=format_money(ending),
             )
         )
 
-        running = totals.setdefault(wallet.currency, [Decimal("0")] * 4)
-        for index, amount in enumerate((opening, income, expenses, ending)):
+        running = totals.setdefault(wallet.currency, [Decimal("0")] * 6)
+        for index, amount in enumerate(
+            (opening, income, expenses, transfers_in, transfers_out, ending)
+        ):
             running[index] += amount
 
     return TrackerSummaryResponse(
@@ -527,9 +620,18 @@ def tracker_summary(
                 opening=format_money(opening),
                 income=format_money(income),
                 expenses=format_money(expenses),
+                transfers_in=format_money(transfers_in),
+                transfers_out=format_money(transfers_out),
                 ending=format_money(ending),
             )
-            for currency, (opening, income, expenses, ending) in totals.items()
+            for currency, (
+                opening,
+                income,
+                expenses,
+                transfers_in,
+                transfers_out,
+                ending,
+            ) in totals.items()
         ],
     )
 
@@ -590,6 +692,12 @@ def update_transaction(
     db: Session = Depends(get_db),
 ) -> TransactionResponse:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
+    _refuse_arrival(transaction)
+    if transaction.type == TRANSACTION_TRANSFER_OUT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A transfer is corrected as a whole, through the transfers endpoint",
+        )
     _require_current(transaction, db)
     is_opening = transaction.type == TRANSACTION_OPENING
 
@@ -733,6 +841,13 @@ def update_transaction(
 
 def _entry_summary(entry: TransactionResponse) -> str:
     """One line naming an entry, for the email that confirms deleting it."""
+    day = entry.transaction_date
+    if entry.type == TRANSACTION_TRANSFER_OUT:
+        return (
+            f"Transfer · {entry.currency} {entry.amount} · {day.day} {day:%b %Y} · "
+            f"{entry.wallet_name} → {entry.to_wallet_name}"
+        )
+
     if entry.type == TRANSACTION_OPENING:
         what = "Opening balance"
     else:
@@ -743,7 +858,6 @@ def _entry_summary(entry: TransactionResponse) -> str:
             category = f"{category}: {entry.other_name}"
         what = f"{entry.type.capitalize()} · {category}"
 
-    day = entry.transaction_date
     return f"{what} · {entry.currency} {entry.amount} · {day.day} {day:%b %Y} · {entry.wallet_name}"
 
 
@@ -776,6 +890,7 @@ def send_delete_code(
     db: Session = Depends(get_db),
 ) -> EmailCodeResponse:
     transaction = get_owned_transaction(transaction_id, user, db)
+    _refuse_arrival(transaction)
     _require_current(transaction, db)
     refuse_if_too_soon(db, user, DELETE_TRANSACTION, transaction.id)
 
@@ -816,11 +931,20 @@ def delete_transaction(
     db: Session = Depends(get_db),
 ) -> None:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
+    _refuse_arrival(transaction)
     _require_current(transaction, db)
     use_code(db, user, DELETE_TRANSACTION, transaction.id, payload.code)
 
-    wallets = _lock_wallets({transaction.wallet_id}, db)
+    # Deleting a transfer cancels both of its rows, so the money goes back.
+    arrival = _arrival(transaction, db)
+    wallet_ids = {transaction.wallet_id}
+    if arrival is not None:
+        wallet_ids.add(arrival.wallet_id)
+    wallets = _lock_wallets(wallet_ids, db)
+
     db.add(_reverse(transaction, wallets, payload.reason))
+    if arrival is not None:
+        db.add(_reverse(arrival, wallets, payload.reason))
     db.commit()
 
 
@@ -841,6 +965,7 @@ def restore_transaction(
     db: Session = Depends(get_db),
 ) -> TransactionResponse:
     transaction = get_owned_transaction(transaction_id, user, db, for_update=True)
+    _refuse_arrival(transaction)
 
     if transaction.reverses_id is not None:
         raise HTTPException(
@@ -867,7 +992,21 @@ def restore_transaction(
             detail="This entry was corrected or restored already. Open its latest version instead",
         )
 
-    wallets = _lock_wallets({transaction.wallet_id}, db)
+    # A transfer comes back with the row where its money arrived. If that
+    # wallet has since been deleted, there is nowhere for it to arrive.
+    arrival = None
+    if transaction.type == TRANSACTION_TRANSFER_OUT:
+        arrival = _arrival(transaction, db)
+        if arrival is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The wallet this transfer went to has been deleted, so it cannot be restored",
+            )
+
+    wallet_ids = {transaction.wallet_id}
+    if arrival is not None:
+        wallet_ids.add(arrival.wallet_id)
+    wallets = _lock_wallets(wallet_ids, db)
     restored = Transaction(
         user_id=transaction.user_id,
         wallet_id=transaction.wallet_id,
@@ -887,6 +1026,9 @@ def restore_transaction(
     wallets[transaction.wallet_id].balance += _effect(transaction.type, transaction.amount)
 
     db.add(restored)
+    if arrival is not None:
+        db.flush()
+        db.add(_arrive(restored, arrival.wallet_id, arrival.amount, wallets))
     db.commit()
 
     return _load_response(restored.id, db)
@@ -1012,3 +1154,229 @@ def promote_other(
         is_global=target.main_tracker_id is None,
         moved=moved,
     )
+
+# --------------------------------------------------------------------------
+# Transfers between wallets
+# --------------------------------------------------------------------------
+
+
+def _transfer_wallets(
+    from_wallet_id: int,
+    to_wallet_id: int,
+    user: User,
+    db: Session,
+) -> tuple[Wallet, Wallet]:
+    """The two wallets of a transfer: different, and in the same tracker."""
+    source = get_owned_wallet(from_wallet_id, user, db)
+    destination = get_owned_wallet(to_wallet_id, user, db)
+    _require_main_tracker_wallet(source)
+    _require_main_tracker_wallet(destination)
+
+    if source.id == destination.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Choose two different wallets",
+        )
+    if source.main_tracker_id != destination.main_tracker_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A transfer moves money between wallets of the same tracker",
+        )
+    return source, destination
+
+
+def _amount_received(
+    source: Wallet,
+    destination: Wallet,
+    amount: Decimal,
+    to_amount: Decimal | None,
+) -> Decimal:
+    """What arrives. Between two wallets in one currency it is what left;
+    between two currencies it has to be given, since there are no exchange
+    rates yet."""
+    if source.currency == destination.currency:
+        if to_amount is not None and to_amount != amount:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Both wallets use {source.currency}, so what arrives is what leaves"
+                ),
+            )
+        return amount
+
+    if to_amount is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Say how much arrives in {destination.name}, in {destination.currency}",
+        )
+    return to_amount
+
+
+@router.post(
+    "/transfers",
+    response_model=TransactionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Move money from one wallet to another",
+    description=(
+        "Both wallets must be in the same tracker. Between two currencies, "
+        "to_amount says what arrives. The transfer is returned as the row where "
+        "the money left, with to_wallet and to_amount for where it arrived. A "
+        "fee, if given, is recorded as a separate expense from the first wallet."
+    ),
+)
+def create_transfer(
+    payload: TransferCreateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TransactionResponse:
+    source, destination = _transfer_wallets(
+        payload.from_wallet_id, payload.to_wallet_id, user, db
+    )
+    received = _amount_received(source, destination, payload.amount, payload.to_amount)
+
+    fee_category = None
+    if payload.fee is not None:
+        if payload.fee_category_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Choose a category for the fee",
+            )
+        fee_category = _check_category(
+            payload.fee_category_id, TRANSACTION_EXPENSE, source, user, db
+        )
+
+    wallets = _lock_wallets({source.id, destination.id}, db)
+
+    departure = Transaction(
+        user_id=user.id,
+        wallet_id=source.id,
+        amount=payload.amount,
+        type=TRANSACTION_TRANSFER_OUT,
+        description=payload.description,
+        transaction_date=payload.transaction_date,
+    )
+    db.add(departure)
+    db.flush()
+    wallets[source.id].balance += _effect(TRANSACTION_TRANSFER_OUT, payload.amount)
+    db.add(_arrive(departure, destination.id, received, wallets))
+
+    # The fee is an ordinary expense, so it counts towards spending and the
+    # Budget tab, which the transfer itself never does.
+    if fee_category is not None:
+        db.add(
+            Transaction(
+                user_id=user.id,
+                wallet_id=source.id,
+                category_id=fee_category.id,
+                amount=payload.fee,
+                type=TRANSACTION_EXPENSE,
+                description=f"Fee for a transfer to {destination.name}"[:255],
+                transaction_date=payload.transaction_date,
+                other_name="Transfer fee" if is_others(fee_category) else None,
+            )
+        )
+        wallets[source.id].balance += _effect(TRANSACTION_EXPENSE, payload.fee)
+
+    db.commit()
+
+    return _load_response(departure.id, db)
+
+
+@router.patch(
+    "/transfers/{transfer_id}",
+    response_model=TransactionResponse,
+    summary="Correct a transfer",
+    description=(
+        "Give the transfer's own id, the row where the money left. Both of its "
+        "rows are reversed and a corrected pair is added, so the history keeps "
+        "every version. The corrected transfer is returned. Its id is new."
+    ),
+)
+def update_transfer(
+    transfer_id: int,
+    payload: TransferUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TransactionResponse:
+    departure = get_owned_transaction(transfer_id, user, db, for_update=True)
+    _refuse_arrival(departure)
+    if departure.type != TRANSACTION_TRANSFER_OUT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This entry is not a transfer",
+        )
+    _require_current(departure, db)
+    arrival = _arrival(departure, db)
+    if arrival is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The wallet this transfer went to has been deleted",
+        )
+
+    old_source = get_owned_wallet(departure.wallet_id, user, db)
+    old_destination = get_owned_wallet(arrival.wallet_id, user, db)
+    source, destination = _transfer_wallets(
+        payload.from_wallet_id or old_source.id,
+        payload.to_wallet_id or old_destination.id,
+        user,
+        db,
+    )
+
+    amount = payload.amount if payload.amount is not None else departure.amount
+    to_amount = payload.to_amount
+    same_currencies = (source.currency, destination.currency) == (
+        old_source.currency,
+        old_destination.currency,
+    )
+    # Between two currencies, what arrived stays as it was unless the
+    # currencies themselves change, which needs a new figure.
+    if to_amount is None and source.currency != destination.currency and same_currencies:
+        to_amount = arrival.amount
+    received = _amount_received(source, destination, amount, to_amount)
+
+    new_date = (
+        payload.transaction_date
+        if payload.transaction_date is not None
+        else departure.transaction_date
+    )
+    # Left out means "leave it"; sent as null means "clear it".
+    new_description = (
+        payload.description
+        if "description" in payload.model_fields_set
+        else departure.description
+    )
+
+    unchanged = (
+        source.id == departure.wallet_id
+        and destination.id == arrival.wallet_id
+        and amount == departure.amount
+        and received == arrival.amount
+        and new_date == departure.transaction_date
+        and new_description == departure.description
+    )
+    if unchanged:
+        return _load_response(departure.id, db)
+
+    wallets = _lock_wallets(
+        {old_source.id, old_destination.id, source.id, destination.id}, db
+    )
+    db.add(_reverse(departure, wallets, payload.reason))
+    db.add(_reverse(arrival, wallets, payload.reason))
+
+    correction = Transaction(
+        user_id=user.id,
+        wallet_id=source.id,
+        amount=amount,
+        type=TRANSACTION_TRANSFER_OUT,
+        description=new_description,
+        transaction_date=new_date,
+        replaces_id=departure.id,
+        origin_id=departure.origin_id or departure.id,
+    )
+    db.add(correction)
+    db.flush()
+    wallets[source.id].balance += _effect(TRANSACTION_TRANSFER_OUT, amount)
+    db.add(_arrive(correction, destination.id, received, wallets))
+    db.commit()
+
+    return _load_response(correction.id, db)

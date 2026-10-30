@@ -1689,7 +1689,215 @@ def main() -> None:
     check("another account's budget is not found", status, 404)
     status, _ = set_expected(groceries, "2025-01-01", "1.00", token=token_b)
     check("another account cannot set an expected amount", status, 404)
-    
+
+    print("\nTransfers")
+    status, moves = call("POST", "/trackers", token_a, {"name": "Moves"})
+    four = id_of(moves)
+    status, spend = call(
+        "POST",
+        f"/trackers/{four}/wallets",
+        token_a,
+        {"name": "Spending", "currency": "PHP", "opening_balance": "1000.00"},
+    )
+    status, savings = call(
+        "POST", f"/trackers/{four}/wallets", token_a, {"name": "Savings", "currency": "PHP"}
+    )
+    status, travel = call(
+        "POST", f"/trackers/{four}/wallets", token_a, {"name": "Travel", "currency": "USD"}
+    )
+
+    def balances():
+        rows = call("GET", f"/trackers/{four}/wallets", token_a)[1] or []
+        return {row["name"]: row["balance"] for row in rows}
+
+    def transfer_rows(path_suffix=""):
+        rows = call(
+            "GET",
+            f"/trackers/{four}/transactions?start_date=2025-04-01&end_date=2025-04-30{path_suffix}",
+            token_a,
+        )[1] or []
+        return [row for row in rows if row["type"].startswith("transfer")]
+
+    move = {
+        "from_wallet_id": id_of(spend),
+        "to_wallet_id": id_of(savings),
+        "amount": "300.00",
+        "transaction_date": "2025-04-10",
+    }
+    status, sent = call("POST", "/transfers", token_a, move)
+    check(
+        "a transfer moves money from one wallet to another",
+        (status, (sent or {}).get("type"), (sent or {}).get("to_wallet_name"), (sent or {}).get("to_amount")),
+        (201, "transfer_out", "Savings", "300.00"),
+    )
+    check(
+        "both balances follow it",
+        (balances().get("Spending"), balances().get("Savings")),
+        ("700.00", "300.00"),
+    )
+    check(
+        "it is listed once, as where the money left",
+        [(row["wallet_name"], row["to_wallet_name"]) for row in transfer_rows()],
+        [("Spending", "Savings")],
+    )
+    check(
+        "and shows up for the wallet it went to",
+        len(transfer_rows(f"&wallet_id={id_of(savings)}")),
+        1,
+    )
+
+    status, body = call(
+        "GET",
+        f"/trackers/{four}/summary?start_date=2025-04-01&end_date=2025-04-30",
+        token_a,
+    )
+    by_wallet = {row["wallet_name"]: row for row in (body or {}).get("wallets", [])}
+    check(
+        "the overview counts transfers in and out, never as income or expenses",
+        [
+            (
+                by_wallet.get(name, {}).get("income"),
+                by_wallet.get(name, {}).get("expenses"),
+                by_wallet.get(name, {}).get("transfers_in"),
+                by_wallet.get(name, {}).get("transfers_out"),
+                by_wallet.get(name, {}).get("ending"),
+            )
+            for name in ("Spending", "Savings")
+        ],
+        [("0.00", "0.00", "0.00", "300.00", "-300.00"), ("0.00", "0.00", "300.00", "0.00", "300.00")],
+    )
+
+    status, _ = call("POST", "/transfers", token_a, {**move, "to_wallet_id": id_of(spend)})
+    check("a transfer needs two different wallets", status, 409)
+    status, _ = call("POST", "/transfers", token_a, {**move, "to_wallet_id": wallet["id"]})
+    check("and both in the same tracker", status, 409)
+    status, _ = call("POST", "/transfers", token_a, {**move, "to_amount": "250.00"})
+    check("in one currency, what arrives is what leaves", status, 422)
+    status, _ = call("POST", "/transfers", token_a, {**move, "to_wallet_id": id_of(travel)})
+    check("between currencies, what arrives has to be given", status, 422)
+
+    status, abroad = call(
+        "POST",
+        "/transfers",
+        token_a,
+        {**move, "to_wallet_id": id_of(travel), "amount": "560.00", "to_amount": "10.00"},
+    )
+    check(
+        "between currencies, each wallet moves by its own amount",
+        (status, balances().get("Spending"), balances().get("Travel")),
+        (201, "140.00", "10.00"),
+    )
+
+    status, with_fee = call(
+        "POST",
+        "/transfers",
+        token_a,
+        {**move, "amount": "100.00", "fee": "15.00", "fee_category_id": groceries["id"]},
+    )
+    fee_rows = [
+        row
+        for row in call(
+            "GET",
+            f"/trackers/{four}/transactions?start_date=2025-04-01&end_date=2025-04-30",
+            token_a,
+        )[1]
+        or []
+        if row["type"] == "expense"
+    ]
+    check(
+        "a fee is recorded as an expense from the sending wallet",
+        (
+            status,
+            balances().get("Spending"),
+            [(row["wallet_name"], row["amount"], row["category_name"]) for row in fee_rows],
+        ),
+        (201, "25.00", [("Spending", "15.00", "Groceries")]),
+    )
+    status, _ = call("POST", "/transfers", token_a, {**move, "fee": "15.00"})
+    check("a fee needs a category", status, 422)
+
+    status, body = call(
+        "GET", f"/trackers/{four}/budget?start_date=2025-04-01&end_date=2025-04-30", token_a
+    )
+    check(
+        "a transfer never counts towards the budget, though its fee does",
+        budget_row(body or {}, "expense", "Groceries").get("actual"),
+        "15.00",
+    )
+
+    status, corrected = call(
+        "PATCH", f"/transfers/{id_of(sent)}", token_a, {"amount": "400.00", "reason": "Typo"}
+    )
+    check(
+        "a transfer can be corrected as a whole",
+        (
+            status,
+            id_of(corrected) != id_of(sent),
+            (corrected or {}).get("to_amount"),
+            balances().get("Spending"),
+            balances().get("Savings"),
+        ),
+        (200, True, "400.00", "-75.00", "500.00"),
+    )
+    status, rerouted = call(
+        "PATCH",
+        f"/transfers/{id_of(corrected)}",
+        token_a,
+        {"to_wallet_id": id_of(travel), "to_amount": "7.00"},
+    )
+    check(
+        "including where it went",
+        (status, (rerouted or {}).get("to_wallet_name"), balances().get("Savings"), balances().get("Travel")),
+        (200, "Travel", "100.00", "17.00"),
+    )
+    status, _ = call(
+        "PATCH",
+        f"/transfers/{id_of(rerouted)}",
+        token_a,
+        {"to_wallet_id": id_of(savings), "amount": "50.00"},
+    )
+    check("moving it to one currency needs no amount received", status, 200)
+    status, _ = call("PATCH", f"/transactions/{id_of(with_fee)}", token_a, {"amount": "1.00"})
+    check("a transfer is not corrected as an ordinary entry", status, 409)
+
+    status, history = call("GET", f"/transactions/{id_of(sent)}/history", token_a)
+    check(
+        "its history keeps every version",
+        [row["type"] for row in history or [] if row["reverses_id"] is None],
+        ["transfer_out"] * 4,
+    )
+
+    current = transfer_rows()
+    latest = next((row for row in current if not row["is_reversed"] and row["to_wallet_name"] == "Savings" and row["amount"] == "50.00"), {})
+    arrival_id = (latest.get("id") or 0) + 1
+    status, arrival = call("GET", f"/transactions/{arrival_id}", token_a)
+    status, _ = call("POST", f"/transactions/{arrival_id}/delete-code", token_a)
+    check(
+        "where a transfer arrived cannot be deleted by itself",
+        ((arrival or {}).get("type"), status),
+        ("transfer_in", 409),
+    )
+
+    before = balances()
+    check("a transfer is deleted with a code like any entry", delete_entry(id_of(latest)), 204)
+    check(
+        "and both wallets get their money back",
+        (before.get("Spending"), before.get("Savings"), balances().get("Spending"), balances().get("Savings")),
+        ("275.00", "150.00", "325.00", "100.00"),
+    )
+    status, back = call("POST", f"/transactions/{id_of(latest)}/restore", token_a, {})
+    check(
+        "a deleted transfer can be restored",
+        (status, (back or {}).get("to_wallet_name"), balances()),
+        (200, "Savings", before),
+    )
+
+    status, _ = call("DELETE", f"/wallets/{id_of(savings)}", token_a)
+    check("a wallet a transfer went to cannot be deleted", status, 409)
+
+    status, _ = call("POST", "/transfers", token_b, move)
+    check("another account's wallets cannot be used for a transfer", status, 404)
+
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)
     check("another account's tracker is not found", status, 404)

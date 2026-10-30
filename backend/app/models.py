@@ -28,6 +28,11 @@ OTHERS_CATEGORY_NAME = "Others"
 TRANSACTION_INCOME = "income"
 TRANSACTION_EXPENSE = "expense"
 TRANSACTION_OPENING = "opening"
+# A transfer between two wallets of one tracker is two rows: what left one
+# wallet, and what arrived in the other. Neither is income or an expense, so
+# they count towards balances but never towards income, spending or budgets.
+TRANSACTION_TRANSFER_OUT = "transfer_out"
+TRANSACTION_TRANSFER_IN = "transfer_in"
 
 class User(Base):
     __tablename__ = "users"
@@ -137,7 +142,8 @@ class Transaction(Base):
     recurring_rule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("recurring_rules.id"), nullable=True, index=True)
     source_main_tracker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("main_trackers.id"), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
-    type: Mapped[str] = mapped_column(String(10))
+    # Up to 20 characters, so "transfer_out" fits.
+    type: Mapped[str] = mapped_column(String(20))
     description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     transaction_date: Mapped[date] = mapped_column(Date)
     is_edited_instance: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -172,6 +178,12 @@ class Transaction(Base):
     # On the copy that brought a deleted entry back. It replaces the deleted
     # version the same way a correction does, so this is what tells the two apart.
     is_restoration: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # On the row where a transfer arrived: the row where it left the other
+    # wallet. The leaving row stands for the whole transfer in lists and
+    # history; this one is corrected, deleted and restored along with it.
+    transfer_out_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, unique=True, index=True
+    )
 
 
 class BudgetLimit(Base):

@@ -415,6 +415,94 @@ class TransactionRestoreRequest(BaseModel):
         return _clean_description(value)
 
 
+class TransferCreateRequest(BaseModel):
+    from_wallet_id: int = Field(ge=1)
+    to_wallet_id: int = Field(ge=1)
+    amount: Decimal = Field(
+        gt=0,
+        max_digits=AMOUNT_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description="What leaves the first wallet, in its currency.",
+    )
+    to_amount: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=AMOUNT_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description=(
+            "What arrives in the second wallet, in its currency. Needed only "
+            "when the two wallets use different currencies."
+        ),
+    )
+    transaction_date: date
+    description: str | None = Field(default=None, max_length=255)
+    fee: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=AMOUNT_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description=(
+            "Optional: a charge for the transfer, recorded as a separate expense "
+            "from the first wallet."
+        ),
+    )
+    fee_category_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="The expense category the fee is filed under. Needed with a fee.",
+    )
+
+    @field_validator("transaction_date")
+    @classmethod
+    def not_in_future(cls, value: date) -> date:
+        return _reject_future_date(value)
+
+    @field_validator("description")
+    @classmethod
+    def tidy_description(cls, value: str | None) -> str | None:
+        return _clean_description(value)
+
+
+class TransferUpdateRequest(BaseModel):
+    """Every field is optional; anything left out stays as it is.
+
+    Sending description as null clears it. A fee was recorded as an expense of
+    its own, so it is corrected or deleted on its own.
+    """
+
+    from_wallet_id: int | None = Field(default=None, ge=1)
+    to_wallet_id: int | None = Field(default=None, ge=1)
+    amount: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=AMOUNT_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+    )
+    to_amount: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=AMOUNT_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+    )
+    transaction_date: date | None = None
+    description: str | None = Field(default=None, max_length=255)
+    reason: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional: why the transfer is being corrected. Kept in its history.",
+    )
+
+    @field_validator("transaction_date")
+    @classmethod
+    def not_in_future(cls, value: date | None) -> date | None:
+        return _reject_future_date(value)
+
+    @field_validator("description", "reason")
+    @classmethod
+    def tidy_description(cls, value: str | None) -> str | None:
+        return _clean_description(value)
+
+    
 class OthersCategoryRequest(BaseModel):
     """Which Others bucket: the top-level one of a kind, or the one under a parent."""
 
@@ -576,12 +664,18 @@ class TransactionResponse(BaseModel):
     # On a reversal: why the entry was corrected or deleted. On a restored
     # entry: why it was restored.
     reason: str | None = None
+    # On a transfer: the wallet the money went to, and what arrived there in
+    # that wallet's currency. Empty on everything else.
+    to_wallet_id: int | None = None
+    to_wallet_name: str | None = None
+    to_currency: str | None = None
+    to_amount: str | None = None
     
 class WalletSummaryResponse(BaseModel):
     """One wallet's movement over a date range.
 
-    opening + income - expenses always equals ending, so a table built from
-    these rows always adds up across.
+    opening + income + transfers_in - expenses - transfers_out always equals
+    ending, so a table built from these rows always adds up across.
     """
 
     wallet_id: int
@@ -590,11 +684,13 @@ class WalletSummaryResponse(BaseModel):
     opening: str
     income: str
     expenses: str
+    transfers_in: str
+    transfers_out: str
     ending: str
 
 
 class CurrencyTotalResponse(BaseModel):
-    """The same four figures added up across every wallet in one currency.
+    """The same figures added up across every wallet in one currency.
 
     Amounts in different currencies are never added together, so a tracker
     with both peso and dollar wallets gets one total per currency.
@@ -604,6 +700,8 @@ class CurrencyTotalResponse(BaseModel):
     opening: str
     income: str
     expenses: str
+    transfers_in: str
+    transfers_out: str
     ending: str
 
 
