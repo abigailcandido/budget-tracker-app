@@ -164,6 +164,8 @@ data class TransactionResponse(
     val fee: String? = null,
     // On a transfer's fee: the transfer it belongs to, which is where it is changed.
     @SerialName("fee_for_id") val feeForId: Int? = null,
+    // On a transfer's fee: the transfer's latest version, the one to open.
+    @SerialName("fee_transfer_id") val feeTransferId: Int? = null,
 )
 
 val TransactionResponse.entryType: EntryType

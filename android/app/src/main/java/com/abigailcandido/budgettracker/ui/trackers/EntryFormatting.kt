@@ -3,6 +3,7 @@ package com.abigailcandido.budgettracker.ui.trackers
 import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
+import java.math.RoundingMode
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.time.LocalDate
@@ -87,4 +88,30 @@ fun entryTypeLabel(entry: TransactionResponse): String = when (entry.entryType) 
     EntryType.Income -> "Income"
     EntryType.Opening -> "Opening balance"
     EntryType.Transfer -> "Transfer"
+}
+
+/** A transfer between wallets of two currencies, which the Forex tab lists. */
+val TransactionResponse.isForex: Boolean
+    get() = entryType == EntryType.Transfer && toCurrency != null && toCurrency != currency
+
+/**
+ * A forex transfer's rate, as one unit of the dearer currency: sending
+ * PHP 560.00 for USD 10.00 is "1 USD = 56.00 PHP". Null when an amount is
+ * missing or zero.
+ */
+fun forexRate(entry: TransactionResponse): String? {
+    val sent = entry.amount.toBigDecimalOrNull()?.abs() ?: return null
+    val received = entry.toAmount?.toBigDecimalOrNull()?.abs() ?: return null
+    val toCurrency = entry.toCurrency ?: return null
+    if (sent.signum() == 0 || received.signum() == 0) return null
+
+    val (unit, rate, per) = if (sent >= received) {
+        Triple(toCurrency, sent.divide(received, 4, RoundingMode.HALF_UP), entry.currency)
+    } else {
+        Triple(entry.currency, received.divide(sent, 4, RoundingMode.HALF_UP), toCurrency)
+    }
+    // Up to four decimals, and never fewer than two: 56.00, 56.1234.
+    val trimmed = rate.stripTrailingZeros()
+    val shown = if (trimmed.scale() < 2) trimmed.setScale(2) else trimmed
+    return "1 $unit = ${shown.toPlainString()} $per"
 }

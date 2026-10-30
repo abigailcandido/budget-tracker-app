@@ -7,6 +7,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.abigailcandido.budgettracker.data.AuthRepository
 import com.abigailcandido.budgettracker.data.BudgetRepository
 import com.abigailcandido.budgettracker.data.CategoryRepository
+import com.abigailcandido.budgettracker.data.TrackerRepository
 import com.abigailcandido.budgettracker.data.TransactionRepository
 import com.abigailcandido.budgettracker.data.WalletRepository
 import com.abigailcandido.budgettracker.data.remote.ApiResult
@@ -42,7 +43,8 @@ private val OPENING_BALANCE_PATTERN = Regex("^-?\\d*(\\.\\d{0,2})?$")
 
 /**
  * The tabs under the wallets, in screen order. Overview is the wallet table,
- * Budget the expected and actual amounts per category, and the rest are entry lists.
+ * Budget the expected and actual amounts per category, Transfers and Forex
+ * are tables of transfers, and the rest are entry lists.
  */
 enum class EntryFilter(val label: String) {
     Overview("Overview"),
@@ -50,13 +52,16 @@ enum class EntryFilter(val label: String) {
     All("All Transactions"),
     Income("Income"),
     Expenses("Expenses"),
-    Transfers("Transfers");
+    Transfers("Transfers"),
+    Forex("Forex");
 
-    fun matches(type: EntryType): Boolean = when (this) {
+    /** Transfers between two currencies go on the Forex tab, the rest on Transfers. */
+    fun matches(entry: TransactionResponse): Boolean = when (this) {
         Overview, Budget, All -> true
-        Income -> type == EntryType.Income
-        Expenses -> type == EntryType.Expense
-        Transfers -> type == EntryType.Transfer
+        Income -> entry.entryType == EntryType.Income
+        Expenses -> entry.entryType == EntryType.Expense
+        Transfers -> entry.entryType == EntryType.Transfer && !entry.isForex
+        Forex -> entry.isForex
     }
 }
 
@@ -92,6 +97,14 @@ data class TrackerUiState(
     val entryForm: EntryForm? = null,
     /** The dialog that sets a category's expected amount, while it is open. */
     val expectedForm: ExpectedAmountForm? = null,
+    /** The tracker's name once it has been renamed in Settings, otherwise null. */
+    val trackerName: String? = null,
+    /** The dialog that renames the tracker or one of its wallets, while it is open. */
+    val renameForm: RenameForm? = null,
+    val isDeleteTrackerOpen: Boolean = false,
+    val isDeletingTracker: Boolean = false,
+    /** Set once the tracker is deleted, so the app goes back to the list. */
+    val isTrackerDeleted: Boolean = false,
 ) {
     val selectedWallet: WalletResponse?
         get() = wallets.firstOrNull { it.id == selectedWalletId }
@@ -103,12 +116,16 @@ data class TrackerUiState(
             (selectedWalletId == null ||
                     entry.walletId == selectedWalletId ||
                     entry.toWalletId == selectedWalletId) &&
-                    filter.matches(entry.entryType)
+                    filter.matches(entry)
         }
 
     /** Amounts only need a currency beside them once the tracker mixes currencies. */
     val showsCurrency: Boolean
         get() = wallets.map { it.currency }.distinct().size > 1
+
+    /** The tabs on show. Forex only appears once the wallets use two or more currencies. */
+    val filters: List<EntryFilter>
+        get() = EntryFilter.entries.filter { it != EntryFilter.Forex || showsCurrency }
 
     val canCreateWallet: Boolean
         get() = !isCreatingWallet &&
@@ -123,6 +140,7 @@ class TrackerViewModel(
     private val transactionRepository: TransactionRepository,
     private val budgetRepository: BudgetRepository,
     private val authRepository: AuthRepository,
+    private val trackerRepository: TrackerRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TrackerUiState())
@@ -329,11 +347,117 @@ class TrackerViewModel(
             _uiState.update { it.copy(pendingDeleteWalletId = null) }
 
             when (val result = walletRepository.delete(walletId)) {
-                is ApiResult.Success -> refresh()
+                is ApiResult.Success -> {
+                    // A deleted wallet can't stay selected.
+                    _uiState.update {
+                        it.copy(selectedWalletId = it.selectedWalletId.takeIf { id -> id != walletId })
+                    }
+                    refresh()
+                }
                 is ApiResult.Failure -> _uiState.update {
                     it.copy(actionError = result.message)
                 }
             }
+        }
+    }
+
+    // ---- Settings: the tracker's name, its wallets, and deleting it ----
+
+    /** Opens the dialog that renames the tracker, starting from its name now. */
+    fun onRenameTrackerClick(currentName: String) {
+        _uiState.update { it.copy(renameForm = RenameForm(walletId = null, name = currentName)) }
+    }
+
+    /** Opens the dialog that renames one wallet. */
+    fun onRenameWalletClick(walletId: Int) {
+        val wallet = _uiState.value.wallets.firstOrNull { it.id == walletId } ?: return
+        _uiState.update { it.copy(renameForm = RenameForm(walletId = walletId, name = wallet.name)) }
+    }
+
+    fun onRenameNameChange(value: String) {
+        updateRename { it.copy(name = value.take(NAME_MAX_LENGTH), error = null) }
+    }
+
+    /** Cancel, or tapping outside. Ignored while the new name is on its way. */
+    fun onDismissRename() {
+        if (_uiState.value.renameForm?.isSaving == true) return
+        _uiState.update { it.copy(renameForm = null) }
+    }
+
+    /**
+     * Saves the new name. Entries look their wallet's name up rather than
+     * keeping a copy, so after a wallet is renamed, reloading shows the new
+     * name on every entry and transfer.
+     */
+    fun saveRename() {
+        val form = _uiState.value.renameForm ?: return
+        if (!form.canSave) return
+
+        viewModelScope.launch {
+            updateRename { it.copy(isSaving = true, error = null) }
+
+            val walletId = form.walletId
+            if (walletId == null) {
+                when (val result = trackerRepository.rename(trackerId, form.name)) {
+                    is ApiResult.Success -> _uiState.update {
+                        it.copy(renameForm = null, trackerName = result.data.name)
+                    }
+                    is ApiResult.Failure -> updateRename {
+                        it.copy(isSaving = false, error = result.message)
+                    }
+                }
+            } else {
+                when (val result = walletRepository.rename(walletId, form.name)) {
+                    is ApiResult.Success -> {
+                        _uiState.update { it.copy(renameForm = null) }
+                        refresh()
+                    }
+                    is ApiResult.Failure -> updateRename {
+                        it.copy(isSaving = false, error = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun onDeleteTrackerClick() {
+        _uiState.update { it.copy(isDeleteTrackerOpen = true) }
+    }
+
+    fun onDismissDeleteTracker() {
+        if (_uiState.value.isDeletingTracker) return
+        _uiState.update { it.copy(isDeleteTrackerOpen = false) }
+    }
+
+    /**
+     * Deletes the tracker. The server refuses while it still has wallets, so
+     * nothing with money in it disappears by accident. Once it is gone, the
+     * app goes back to the list of trackers.
+     */
+    fun confirmDeleteTracker() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isDeletingTracker = true) }
+
+            when (val result = trackerRepository.delete(trackerId)) {
+                is ApiResult.Success -> _uiState.update {
+                    it.copy(isDeletingTracker = false, isDeleteTrackerOpen = false, isTrackerDeleted = true)
+                }
+                is ApiResult.Failure -> _uiState.update {
+                    it.copy(
+                        isDeletingTracker = false,
+                        isDeleteTrackerOpen = false,
+                        actionError = result.message,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Changes the rename dialog if it is open, and does nothing if it has been closed. */
+    private fun updateRename(transform: (RenameForm) -> RenameForm) {
+        _uiState.update { state ->
+            val form = state.renameForm ?: return@update state
+            state.copy(renameForm = transform(form))
         }
     }
 
@@ -496,9 +620,25 @@ class TrackerViewModel(
     /** From a transfer's fee to its transfer, which is where the fee is changed. */
     fun onOpenFeeTransfer() {
         val current = _uiState.value
-        val transferId = current.entryDetail?.entry?.feeForId ?: return
-        val transfer = current.transactions.firstOrNull { it.id == transferId } ?: return
-        onEntryClick(transfer)
+        val fee = current.entryDetail?.entry ?: return
+        // The transfer's latest version: after a correction or a deletion,
+        // the version the fee was charged with is no longer the one listed.
+        val transferId = fee.feeTransferId ?: fee.feeForId ?: return
+        val listed = current.transactions.firstOrNull { it.id == transferId }
+        if (listed != null) {
+            onEntryClick(listed)
+            return
+        }
+        // Not in the dates showing, so its history is fetched instead.
+        viewModelScope.launch {
+            when (val result = transactionRepository.history(transferId)) {
+                is ApiResult.Success -> {
+                    val transfer = result.data.firstOrNull { it.id == transferId }
+                    if (transfer != null) onEntryClick(transfer)
+                }
+                is ApiResult.Failure -> _uiState.update { it.copy(actionError = result.message) }
+            }
+        }
     }
 
     /** Edit asks for the PIN every time, before the form opens. A deleted entry has no Edit. */
@@ -834,7 +974,7 @@ class TrackerViewModel(
 
     /**
      * Opens a blank form. It starts as an income on the Income tab, a transfer
-     * on the Transfers tab, and an expense everywhere else, in the selected
+     * on the Transfers and Forex tabs, and an expense everywhere else, in the selected
      * wallet or else the first one, dated today, or the last day of the period
      * showing if that is over.
      */
@@ -842,11 +982,20 @@ class TrackerViewModel(
         val current = _uiState.value
         val wallet = current.selectedWallet ?: current.wallets.firstOrNull() ?: return
         val today = LocalDate.now()
-        // A transfer goes to the first other wallet, so it needs one.
-        val otherWallet = current.wallets.firstOrNull { it.id != wallet.id }
+        // A transfer goes to another wallet, so it needs one: on the Forex
+        // tab, one in another currency, and otherwise one in the same
+        // currency if there is one.
+        val otherWallet = if (current.filter == EntryFilter.Forex) {
+            current.wallets.firstOrNull { it.currency != wallet.currency }
+        } else {
+            current.wallets.firstOrNull { it.id != wallet.id && it.currency == wallet.currency }
+                ?: current.wallets.firstOrNull { it.id != wallet.id }
+        }
+        val startsAsTransfer = current.filter == EntryFilter.Transfers ||
+                current.filter == EntryFilter.Forex
         val type = when {
             current.filter == EntryFilter.Income -> EntryType.Income
-            current.filter == EntryFilter.Transfers && otherWallet != null -> EntryType.Transfer
+            startsAsTransfer && otherWallet != null -> EntryType.Transfer
             else -> EntryType.Expense
         }
 
@@ -1306,6 +1455,7 @@ class TrackerViewModel(
             transactionRepository: TransactionRepository,
             budgetRepository: BudgetRepository,
             authRepository: AuthRepository,
+            trackerRepository: TrackerRepository,
         ) = viewModelFactory {
             initializer {
                 TrackerViewModel(
@@ -1315,6 +1465,7 @@ class TrackerViewModel(
                     transactionRepository,
                     budgetRepository,
                     authRepository,
+                    trackerRepository,
                 )
             }
         }

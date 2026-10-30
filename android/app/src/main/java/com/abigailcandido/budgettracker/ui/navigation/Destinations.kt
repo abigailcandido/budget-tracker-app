@@ -17,6 +17,13 @@ data class TrackerDetail(
     val trackerName: String,
 )
 
+/** The tracker's settings: its name, categories, wallets, and deleting it. */
+@Serializable
+data class TrackerSettings(
+    val trackerId: Int,
+    val trackerName: String,
+)
+
 @Serializable
 data class CategoryList(
     val trackerId: Int,

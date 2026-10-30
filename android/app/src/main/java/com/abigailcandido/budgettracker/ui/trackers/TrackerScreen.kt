@@ -43,12 +43,14 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -60,6 +62,7 @@ import com.abigailcandido.budgettracker.data.remote.EntryType
 import com.abigailcandido.budgettracker.data.remote.TransactionResponse
 import com.abigailcandido.budgettracker.data.remote.WalletResponse
 import com.abigailcandido.budgettracker.data.remote.entryType
+import com.abigailcandido.budgettracker.data.remote.isAdjusted
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
@@ -75,7 +78,7 @@ fun TrackerScreen(
     trackerName: String,
     state: TrackerUiState,
     onBack: () -> Unit,
-    onOpenCategories: () -> Unit,
+    onOpenSettings: () -> Unit,
     onPreviousRange: () -> Unit,
     onNextRange: () -> Unit,
     onRangeSelected: (DateRange) -> Unit,
@@ -88,9 +91,6 @@ fun TrackerScreen(
     onOpeningBalanceChange: (String) -> Unit,
     onConfirmCreateWallet: () -> Unit,
     onDismissCreateWallet: () -> Unit,
-    onDeleteWalletClick: (Int) -> Unit,
-    onConfirmDeleteWallet: () -> Unit,
-    onDismissDeleteWallet: () -> Unit,
     onDismissActionError: () -> Unit,
     onDismissNotice: () -> Unit,
     onRetry: () -> Unit,
@@ -116,7 +116,7 @@ fun TrackerScreen(
                     TextButton(onClick = onBack) { Text("Back") }
                 },
                 actions = {
-                    TextButton(onClick = onOpenCategories) { Text("Categories") }
+                    TextButton(onClick = onOpenSettings) { Text("Settings") }
                 },
             )
         },
@@ -185,14 +185,15 @@ fun TrackerScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f),
                         )
-                        TextButton(onClick = { onDeleteWalletClick(selected.id) }) {
-                            Text("Delete wallet")
-                        }
                         TextButton(onClick = onShowAllWallets) { Text("Show all") }
                     }
                 }
 
-                EntryFilterTabs(selected = state.filter, onSelect = onFilterSelected)
+                EntryFilterTabs(
+                    filters = state.filters,
+                    selected = state.filter,
+                    onSelect = onFilterSelected,
+                )
 
                 when (state.filter) {
                     EntryFilter.Overview -> OverviewTable(
@@ -281,65 +282,6 @@ fun TrackerScreen(
             dismissButton = {
                 TextButton(onClick = onDismissCreateWallet, enabled = !state.isCreatingWallet) {
                     Text("Cancel")
-                }
-            },
-        )
-    }
-
-    val pendingDelete = state.wallets.firstOrNull { it.id == state.pendingDeleteWalletId }
-
-    if (pendingDelete != null) {
-        // Only entries in the range on screen are loaded, so this catches the
-        // common case early. Entries from other months are still caught by the
-        // server, whose refusal appears in the "That didn't work" dialog.
-        // Deleted entries no longer count, so they don't stand in the way.
-        val entryCount = state.transactions.count {
-            (it.walletId == pendingDelete.id || it.toWalletId == pendingDelete.id) &&
-                    it.entryType != EntryType.Opening &&
-                    !it.isDeleted
-        }
-
-        AlertDialog(
-            onDismissRequest = onDismissDeleteWallet,
-            title = {
-                Text(
-                    if (entryCount > 0) {
-                        "${pendingDelete.name} has entries"
-                    } else {
-                        "Delete ${pendingDelete.name}?"
-                    }
-                )
-            },
-            text = {
-                Text(
-                    when {
-                        entryCount > 0 ->
-                            "It has $entryCount " +
-                                    (if (entryCount == 1) "entry" else "entries") +
-                                    " in ${state.range.label}. Delete those first, so " +
-                                    "no history disappears by accident."
-
-                        pendingDelete.balance == "0.00" ->
-                            "This removes the wallet permanently."
-
-                        else ->
-                            "This wallet still holds ${pendingDelete.currency} " +
-                                    "${formatMoney(pendingDelete.balance)}. Deleting it " +
-                                    "discards that balance — the money is not moved " +
-                                    "anywhere."
-                    }
-                )
-            },
-            confirmButton = {
-                if (entryCount > 0) {
-                    TextButton(onClick = onDismissDeleteWallet) { Text("OK") }
-                } else {
-                    TextButton(onClick = onConfirmDeleteWallet) { Text("Delete") }
-                }
-            },
-            dismissButton = {
-                if (entryCount == 0) {
-                    TextButton(onClick = onDismissDeleteWallet) { Text("Cancel") }
                 }
             },
         )
@@ -589,16 +531,17 @@ private fun WalletCard(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EntryFilterTabs(
+    filters: List<EntryFilter>,
     selected: EntryFilter,
     onSelect: (EntryFilter) -> Unit,
 ) {
-    // Scrollable, so "All Transactions" keeps its full name. Four fixed-width
+    // Scrollable, so "All Transactions" keeps its full name. Fixed-width
     // tabs on a narrow phone would cut it short.
     PrimaryScrollableTabRow(
-        selectedTabIndex = selected.ordinal,
+        selectedTabIndex = filters.indexOf(selected).coerceAtLeast(0),
         edgePadding = 0.dp,
     ) {
-        EntryFilter.entries.forEach { filter ->
+        filters.forEach { filter ->
             Tab(
                 selected = filter == selected,
                 onClick = { onSelect(filter) },
@@ -626,6 +569,7 @@ private fun EntryList(
                     EntryFilter.Expenses -> "No expenses"
                     EntryFilter.Income -> "No income"
                     EntryFilter.Transfers -> "No transfers"
+                    EntryFilter.Forex -> "No forex transfers"
                 } + " in ${state.range.label}",
                 style = MaterialTheme.typography.titleMedium,
                 textAlign = TextAlign.Center,
@@ -649,11 +593,22 @@ private fun EntryList(
     // The server sends entries newest first, and grouping keeps that order,
     // so each day's heading sits above that day's entries.
     val byDate = entries.groupBy { it.transactionDate }
+    // The Transfers and Forex tabs are tables: the column names once at the
+    // top, then each day's transfers under its date.
+    val isForex = state.filter == EntryFilter.Forex
+    val isTransferTable = isForex || state.filter == EntryFilter.Transfers
 
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 88.dp),
     ) {
+        if (isTransferTable) {
+            item(key = "columns") {
+                TransferColumns(isForex = isForex)
+                HorizontalDivider()
+            }
+        }
+
         byDate.forEach { (date, dayEntries) ->
             item(key = "date-$date") {
                 Text(
@@ -665,13 +620,22 @@ private fun EntryList(
             }
 
             items(dayEntries, key = { it.id }) { entry ->
-                EntryRow(
-                    entry = entry,
-                    showWallet = state.selectedWalletId == null,
-                    showCurrency = state.showsCurrency,
-                    forWalletId = state.selectedWalletId,
-                    onClick = { onEntryClick(entry) },
-                )
+                if (isTransferTable) {
+                    TransferTableRow(
+                        entry = entry,
+                        isForex = isForex,
+                        showCurrency = state.showsCurrency,
+                        onClick = { onEntryClick(entry) },
+                    )
+                } else {
+                    EntryRow(
+                        entry = entry,
+                        showWallet = state.selectedWalletId == null,
+                        showCurrency = state.showsCurrency,
+                        forWalletId = state.selectedWalletId,
+                        onClick = { onEntryClick(entry) },
+                    )
+                }
                 HorizontalDivider()
             }
         }
@@ -741,12 +705,161 @@ private fun EntryRow(
     }
 }
 
+/** The column names of the Transfers and Forex tables. */
+@Composable
+private fun TransferColumns(isForex: Boolean) {
+    val labels = if (isForex) {
+        listOf("From", "To", "Sent", "Received")
+    } else {
+        listOf("From", "To", "Amount")
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp, bottom = 6.dp),
+    ) {
+        labels.forEachIndexed { index, label ->
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // The amounts sit on the right, like every other money column.
+                textAlign = if (index >= 2) TextAlign.End else TextAlign.Start,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
 /**
- * One row per wallet for the chosen range. For a range that has already
- * ended, the balance when it ended and the balance today are different
- * figures, so both are shown. Otherwise they are the same, and only Current
- * Balance appears. Wider than a phone held upright, so the table scrolls
- * sideways; the explanation below it does not.
+ * One transfer as a table row: where it left, where it went, and how much.
+ * A forex transfer has both amounts, each in its own currency, and its rate
+ * underneath. A deleted transfer stays, greyed out and struck through.
+ */
+@Composable
+private fun TransferTableRow(
+    entry: TransactionResponse,
+    isForex: Boolean,
+    showCurrency: Boolean,
+    onClick: () -> Unit,
+) {
+    val style = MaterialTheme.typography.bodyMedium.withDeletedStyle(entry)
+    val color = if (entry.isDeleted) MaterialTheme.colorScheme.onSurfaceVariant else Color.Unspecified
+    val details = listOfNotNull(
+        forexRate(entry).takeIf { isForex },
+        entry.description,
+    ).joinToString(" · ")
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Text(
+                text = entry.walletName,
+                style = style,
+                color = color,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 4.dp),
+            )
+            Text(
+                text = entry.toWalletName ?: "A deleted wallet",
+                style = style,
+                color = color,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 4.dp),
+            )
+            if (isForex) {
+                TransferAmountCell(
+                    amount = entry.amount,
+                    currency = entry.currency,
+                    style = style,
+                    color = color,
+                    modifier = Modifier.weight(1f),
+                )
+                TransferAmountCell(
+                    amount = entry.toAmount.orEmpty(),
+                    currency = entry.toCurrency,
+                    style = style,
+                    color = color,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                TransferAmountCell(
+                    amount = entry.amount,
+                    currency = entry.currency.takeIf { showCurrency },
+                    style = style,
+                    color = color,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        if (details.isNotEmpty() || entry.isDeleted || entry.isAdjusted) {
+            Row(
+                modifier = Modifier.padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (details.isNotEmpty()) {
+                    Text(
+                        text = details,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .padding(end = 8.dp),
+                    )
+                }
+                EntryTag(entry = entry)
+            }
+        }
+    }
+}
+
+/** An amount on the right of its column, with its currency under it when there is one. */
+@Composable
+private fun TransferAmountCell(
+    amount: String,
+    currency: String?,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.End) {
+        Text(
+            text = formatMoney(amount),
+            style = style,
+            color = color,
+            textAlign = TextAlign.End,
+            maxLines = 1,
+        )
+        if (currency != null) {
+            Text(
+                text = currency,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * One table per currency, one row per wallet, for the chosen range. Pesos and
+ * dollars are never added together, so each currency has its own table and
+ * its own total. For a range that has already ended, the balance when it
+ * ended and the balance today are different figures, so both are shown.
+ * Otherwise they are the same, and only Current Balance appears. Wider than a
+ * phone held upright, so each table scrolls sideways; the explanation below
+ * them does not.
  */
 @Composable
 private fun OverviewTable(
@@ -773,25 +886,8 @@ private fun OverviewTable(
 
     val rangeHasEnded = state.range.end.isBefore(LocalDate.now())
     val currentBalances = state.wallets.associate { it.id to it.balance }
-    // The two transfer columns only appear once money has moved between
-    // wallets in the range, so a tracker without transfers looks as before.
-    val showsTransfers = summary.wallets.any { row ->
-        listOf(row.transfersIn, row.transfersOut)
-            .any { (it.toBigDecimalOrNull()?.signum() ?: 0) != 0 }
-    }
-
-    val headers = buildList {
-        add("Wallet")
-        add("Opening Balance")
-        add("Income")
-        add("Expenses")
-        if (showsTransfers) {
-            add("Transfers In")
-            add("Transfers Out")
-        }
-        if (rangeHasEnded) add("Ending Balance")
-        add("Current Balance")
-    }
+    val isMoving = { amount: String -> (amount.toBigDecimalOrNull()?.signum() ?: 0) != 0 }
+    val anyTransfers = summary.wallets.any { isMoving(it.transfersIn) || isMoving(it.transfersOut) }
 
     Column(
         modifier = modifier
@@ -800,65 +896,84 @@ private fun OverviewTable(
             // The bottom space keeps the Add button from covering the note.
             .padding(top = 8.dp, bottom = 88.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
-        ) {
-            TableRow(cells = headers, isHeader = true)
-            HorizontalDivider()
+        summary.totals.forEach { total ->
+            key(total.currency) {
+                val rows = summary.wallets.filter { it.currency == total.currency }
+                // A currency's transfer columns only appear once money has
+                // moved between its wallets in the range.
+                val showsTransfers = rows.any { isMoving(it.transfersIn) || isMoving(it.transfersOut) }
+                val headers = buildList {
+                    add("Wallet")
+                    add("Opening Balance")
+                    add("Income")
+                    add("Expenses")
+                    if (showsTransfers) {
+                        add("Transfers In")
+                        add("Transfers Out")
+                    }
+                    if (rangeHasEnded) add("Ending Balance")
+                    add("Current Balance")
+                }
 
-            summary.wallets.forEach { row ->
-                TableRow(
-                    cells = balanceCells(
-                        label = if (state.showsCurrency) {
-                            "${row.walletName} (${row.currency})"
-                        } else {
-                            row.walletName
-                        },
-                        opening = row.opening,
-                        income = row.income,
-                        expenses = row.expenses,
-                        transfersIn = row.transfersIn,
-                        transfersOut = row.transfersOut,
-                        ending = row.ending,
-                        current = currentBalances[row.walletId] ?: row.ending,
-                        rangeHasEnded = rangeHasEnded,
-                        showsTransfers = showsTransfers,
-                    ),
-                    isBold = row.walletId == state.selectedWalletId,
-                )
-                HorizontalDivider()
-            }
+                if (summary.totals.size > 1) {
+                    Text(
+                        text = total.currency,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp),
+                    )
+                }
 
-            // One total per currency: pesos and dollars are never added together.
-            summary.totals.forEach { total ->
-                val currentTotal = summary.wallets
-                    .filter { it.currency == total.currency }
-                    .sumOf { row ->
+                Column(
+                    modifier = Modifier
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp),
+                ) {
+                    TableRow(cells = headers, isHeader = true)
+                    HorizontalDivider()
+
+                    rows.forEach { row ->
+                        TableRow(
+                            cells = balanceCells(
+                                label = row.walletName,
+                                opening = row.opening,
+                                income = row.income,
+                                expenses = row.expenses,
+                                transfersIn = row.transfersIn,
+                                transfersOut = row.transfersOut,
+                                ending = row.ending,
+                                current = currentBalances[row.walletId] ?: row.ending,
+                                rangeHasEnded = rangeHasEnded,
+                                showsTransfers = showsTransfers,
+                            ),
+                            isBold = row.walletId == state.selectedWalletId,
+                        )
+                        HorizontalDivider()
+                    }
+
+                    val currentTotal = rows.sumOf { row ->
                         (currentBalances[row.walletId] ?: row.ending).toBigDecimalOrNull()
                             ?: BigDecimal.ZERO
                     }
-
-                TableRow(
-                    cells = balanceCells(
-                        label = if (summary.totals.size > 1) "Total ${total.currency}" else "Total",
-                        opening = total.opening,
-                        income = total.income,
-                        expenses = total.expenses,
-                        transfersIn = total.transfersIn,
-                        transfersOut = total.transfersOut,
-                        ending = total.ending,
-                        current = currentTotal.toPlainString(),
-                        rangeHasEnded = rangeHasEnded,
-                        showsTransfers = showsTransfers,
-                    ),
-                    isBold = true,
-                )
+                    TableRow(
+                        cells = balanceCells(
+                            label = "Total",
+                            opening = total.opening,
+                            income = total.income,
+                            expenses = total.expenses,
+                            transfersIn = total.transfersIn,
+                            transfersOut = total.transfersOut,
+                            ending = total.ending,
+                            current = currentTotal.toPlainString(),
+                            rangeHasEnded = rangeHasEnded,
+                            showsTransfers = showsTransfers,
+                        ),
+                        isBold = true,
+                    )
+                }
             }
         }
 
-        val sum = if (showsTransfers) {
+        val sum = if (anyTransfers) {
             "Opening + Income − Expenses + Transfers In − Transfers Out"
         } else {
             "Opening + Income − Expenses"

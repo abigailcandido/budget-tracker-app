@@ -35,9 +35,6 @@ fun TrackerListScreen(
     state: TrackerListUiState,
     bottomBar: @Composable () -> Unit,
     onOpenTracker: (Int) -> Unit,
-    onDeleteClick: (Int) -> Unit,
-    onConfirmDelete: () -> Unit,
-    onDismissDelete: () -> Unit,
     onAddClick: () -> Unit,
     onRetry: () -> Unit,
     onSignOut: () -> Unit,
@@ -115,35 +112,14 @@ fun TrackerListScreen(
                 }
 
                 items(state.trackers, key = { it.id }) { tracker ->
+                    // Deleting a tracker is done from its Settings, inside it.
                     TrackerRow(
                         name = tracker.name,
                         onOpen = { onOpenTracker(tracker.id) },
-                        onDelete = { onDeleteClick(tracker.id) },
                     )
                 }
             }
         }
-    }
-
-    val pendingDelete = state.trackers.firstOrNull { it.id == state.pendingDeleteId }
-
-    if (pendingDelete != null) {
-        AlertDialog(
-            onDismissRequest = onDismissDelete,
-            title = { Text("Delete ${pendingDelete.name}?") },
-            text = {
-                Text(
-                    "This removes the tracker permanently. Its wallets must be " +
-                            "deleted first, so nothing with money in it disappears by accident."
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = onConfirmDelete) { Text("Delete") }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismissDelete) { Text("Cancel") }
-            },
-        )
     }
 }
 
@@ -151,18 +127,15 @@ fun TrackerListScreen(
 private fun TrackerRow(
     name: String,
     onOpen: () -> Unit,
-    onDelete: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
+                .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(text = name, style = MaterialTheme.typography.titleMedium)
-            TextButton(onClick = onDelete) { Text("Delete") }
         }
     }
 }

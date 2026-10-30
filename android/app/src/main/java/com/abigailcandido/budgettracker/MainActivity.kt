@@ -45,6 +45,7 @@ import com.abigailcandido.budgettracker.ui.navigation.EntryDetail
 import com.abigailcandido.budgettracker.ui.navigation.EntryEdit
 import com.abigailcandido.budgettracker.ui.navigation.Home
 import com.abigailcandido.budgettracker.ui.navigation.TrackerDetail
+import com.abigailcandido.budgettracker.ui.navigation.TrackerSettings
 import com.abigailcandido.budgettracker.ui.navigation.GlobalCategories
 import com.abigailcandido.budgettracker.ui.navigation.TrackerPicker
 import com.abigailcandido.budgettracker.ui.navigation.CategoryAdd
@@ -59,6 +60,7 @@ import com.abigailcandido.budgettracker.ui.trackers.EntryEditScreen
 import com.abigailcandido.budgettracker.ui.trackers.NewTrackerScreen
 import com.abigailcandido.budgettracker.ui.trackers.TrackerListViewModel
 import com.abigailcandido.budgettracker.ui.trackers.TrackerScreen
+import com.abigailcandido.budgettracker.ui.trackers.TrackerSettingsScreen
 import com.abigailcandido.budgettracker.ui.trackers.TrackerViewModel
 
 class MainActivity : ComponentActivity() {
@@ -188,6 +190,7 @@ private fun SignedInNavHost(
             transactionRepository,
             budgetRepository,
             authRepository,
+            trackerRepository,
         )
     }
 
@@ -322,11 +325,14 @@ private fun SignedInNavHost(
             val trackerState by trackerViewModel.uiState.collectAsState()
 
             TrackerScreen(
-                trackerName = route.trackerName,
+                // A name changed in Settings shows straight away.
+                trackerName = trackerState.trackerName ?: route.trackerName,
                 state = trackerState,
                 onBack = { navController.popBackStack() },
-                onOpenCategories = {
-                    navController.navigate(CategoryList(route.trackerId, route.trackerName))
+                onOpenSettings = {
+                    navController.navigate(
+                        TrackerSettings(route.trackerId, trackerState.trackerName ?: route.trackerName)
+                    ) { launchSingleTop = true }
                 },
                 onPreviousRange = trackerViewModel::onPreviousRange,
                 onNextRange = trackerViewModel::onNextRange,
@@ -340,9 +346,6 @@ private fun SignedInNavHost(
                 onOpeningBalanceChange = trackerViewModel::onOpeningBalanceChange,
                 onConfirmCreateWallet = trackerViewModel::createWallet,
                 onDismissCreateWallet = trackerViewModel::onDismissCreateWallet,
-                onDeleteWalletClick = trackerViewModel::onDeleteWalletClick,
-                onConfirmDeleteWallet = trackerViewModel::confirmDeleteWallet,
-                onDismissDeleteWallet = trackerViewModel::onDismissDeleteWallet,
                 onDismissActionError = trackerViewModel::onDismissActionError,
                 onDismissNotice = trackerViewModel::onDismissNotice,
                 onRetry = trackerViewModel::retry,
@@ -362,6 +365,50 @@ private fun SignedInNavHost(
                 onSaveExpectedAmount = trackerViewModel::saveExpectedAmount,
                 onClearExpectedAmount = trackerViewModel::clearExpectedAmount,
                 onDismissExpectedAmount = trackerViewModel::onDismissExpectedAmount,
+            )
+        }
+
+        composable<TrackerSettings> { entry ->
+            val route: TrackerSettings = entry.toRoute()
+            // Borrows the tracker screen's ViewModel, so renamed and deleted
+            // wallets show there straight away.
+            val trackerEntry = remember(entry) { navController.getBackStackEntry<TrackerDetail>() }
+            val trackerViewModel: TrackerViewModel = viewModel(
+                viewModelStoreOwner = trackerEntry,
+                factory = trackerFactory(route.trackerId),
+            )
+            val trackerState by trackerViewModel.uiState.collectAsState()
+            val trackerName = trackerState.trackerName ?: route.trackerName
+
+            // A deleted tracker has nothing left to show, so the app goes back
+            // to the list of trackers.
+            LaunchedEffect(trackerState.isTrackerDeleted) {
+                if (trackerState.isTrackerDeleted) {
+                    navController.popBackStack<Home>(inclusive = false)
+                }
+            }
+
+            TrackerSettingsScreen(
+                trackerName = trackerName,
+                state = trackerState,
+                onBack = { navController.popBackStack() },
+                onRenameTrackerClick = { trackerViewModel.onRenameTrackerClick(trackerName) },
+                onOpenCategories = {
+                    navController.navigate(CategoryList(route.trackerId, trackerName)) {
+                        launchSingleTop = true
+                    }
+                },
+                onRenameWalletClick = trackerViewModel::onRenameWalletClick,
+                onDeleteWalletClick = trackerViewModel::onDeleteWalletClick,
+                onRenameNameChange = trackerViewModel::onRenameNameChange,
+                onSaveRename = trackerViewModel::saveRename,
+                onDismissRename = trackerViewModel::onDismissRename,
+                onConfirmDeleteWallet = trackerViewModel::confirmDeleteWallet,
+                onDismissDeleteWallet = trackerViewModel::onDismissDeleteWallet,
+                onDeleteTrackerClick = trackerViewModel::onDeleteTrackerClick,
+                onConfirmDeleteTracker = trackerViewModel::confirmDeleteTracker,
+                onDismissDeleteTracker = trackerViewModel::onDismissDeleteTracker,
+                onDismissActionError = trackerViewModel::onDismissActionError,
             )
         }
 

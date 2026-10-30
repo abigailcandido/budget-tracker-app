@@ -23,7 +23,6 @@ data class TrackerListUiState(
     val newName: String = "",
     val isCreating: Boolean = false,
     val createError: String? = null,
-    val pendingDeleteId: Int? = null,
     val availableCategories: List<CategoryResponse> = emptyList(),
     val isLoadingCategories: Boolean = false,
     // Null means "the user never got to choose", which happens when the
@@ -45,13 +44,14 @@ class TrackerListViewModel(
     private val _uiState = MutableStateFlow(TrackerListUiState())
     val uiState: StateFlow<TrackerListUiState> = _uiState.asStateFlow()
 
-    init {
-        refresh()
-    }
-
+    /**
+     * Loads the trackers. The home screen calls it each time it shows, so a
+     * tracker renamed or deleted in its Settings is up to date on return.
+     * Only the first load shows the spinner.
+     */
     fun refresh() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            _uiState.update { it.copy(isLoading = it.trackers.isEmpty(), errorMessage = null) }
 
             when (val result = repository.list()) {
                 is ApiResult.Success -> _uiState.update {
@@ -162,29 +162,6 @@ class TrackerListViewModel(
                 }
                 is ApiResult.Failure -> _uiState.update {
                     it.copy(isCreating = false, createError = result.message)
-                }
-            }
-        }
-    }
-
-    fun onDeleteClick(trackerId: Int) {
-        _uiState.update { it.copy(pendingDeleteId = trackerId) }
-    }
-
-    fun onDismissDelete() {
-        _uiState.update { it.copy(pendingDeleteId = null) }
-    }
-
-    fun confirmDelete() {
-        val trackerId = _uiState.value.pendingDeleteId ?: return
-
-        viewModelScope.launch {
-            _uiState.update { it.copy(pendingDeleteId = null) }
-
-            when (val result = repository.delete(trackerId)) {
-                is ApiResult.Success -> refresh()
-                is ApiResult.Failure -> _uiState.update {
-                    it.copy(errorMessage = result.message)
                 }
             }
         }

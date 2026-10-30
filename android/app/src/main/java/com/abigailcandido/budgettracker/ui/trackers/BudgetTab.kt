@@ -24,6 +24,20 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Tab
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -49,6 +63,7 @@ private const val AmountColumnWeight = 1f
  * category that has subcategories. Tapping a category that holds amounts of
  * its own opens the dialog that sets its amount per month.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun BudgetTab(
     state: TrackerUiState,
@@ -82,10 +97,22 @@ internal fun BudgetTab(
         return
     }
 
+    val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    // Where each sub-category table starts, so tapping its category in the
+    // main table can scroll down to it.
+    val tableTops = remember { mutableStateMapOf<Int, Int>() }
+    val scrollToTable: (BudgetRow) -> Unit = { parent ->
+        val top = tableTops[parent.categoryId]
+        if (top != null) scope.launch { scrollState.animateScrollTo(top) }
+    }
+    // Expenses or income, one at a time.
+    var showsIncome by rememberSaveable { mutableStateOf(false) }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             // The bottom space keeps the Add button from covering the last row.
             .padding(top = 8.dp, bottom = 88.dp),
     ) {
@@ -111,68 +138,98 @@ internal fun BudgetTab(
             BudgetNote("The Budget tab counts every wallet in this tracker.")
         }
 
-        BudgetSection(
-            title = "Expenses",
-            table = budget.expense,
-            emptyText = "No expense categories are switched on in this tracker.",
-            differenceNote = "Difference is expected minus actual. Below zero means " +
-                    "more was spent than expected.",
-            onRowClick = onRowClick,
-        )
-        BudgetSection(
-            title = "Income",
-            table = budget.income,
-            emptyText = "No income categories are switched on in this tracker.",
-            differenceNote = "Difference is actual minus expected. Below zero means " +
-                    "less came in than expected.",
-            onRowClick = onRowClick,
-        )
+        SecondaryTabRow(
+            selectedTabIndex = if (showsIncome) 1 else 0,
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            Tab(
+                selected = !showsIncome,
+                onClick = { showsIncome = false },
+                text = { Text("Expenses") },
+            )
+            Tab(
+                selected = showsIncome,
+                onClick = { showsIncome = true },
+                text = { Text("Income") },
+            )
+        }
+
+        if (showsIncome) {
+            BudgetSection(
+                table = budget.income,
+                emptyText = "No income categories are switched on in this tracker.",
+                differenceNote = "Difference is actual minus expected. Below zero means " +
+                        "less came in than expected.",
+                onRowClick = onRowClick,
+                onParentClick = scrollToTable,
+                onTablePlaced = { categoryId, top -> tableTops[categoryId] = top },
+            )
+        } else {
+            BudgetSection(
+                table = budget.expense,
+                emptyText = "No expense categories are switched on in this tracker.",
+                differenceNote = "Difference is expected minus actual. Below zero means " +
+                        "more was spent than expected.",
+                onRowClick = onRowClick,
+                onParentClick = scrollToTable,
+                onTablePlaced = { categoryId, top -> tableTops[categoryId] = top },
+            )
+        }
 
         BudgetNote(
             "Expected is each month's amount, shared out by days when the dates " +
                     "cover only part of a month. Tap a category to set its amount per " +
-                    "month. A category with sub-categories adds theirs up."
+                    "month. A category marked › has sub-categories: it adds theirs up, " +
+                    "and tapping it goes to their table."
         )
     }
 }
 
 @Composable
 private fun BudgetSection(
-    title: String,
     table: BudgetTable,
     emptyText: String,
     differenceNote: String,
     onRowClick: (BudgetRow, String?) -> Unit,
+    onParentClick: (BudgetRow) -> Unit,
+    onTablePlaced: (Int, Int) -> Unit,
 ) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
-    )
-
     if (table.rows.isEmpty()) {
         BudgetNote(emptyText)
         return
     }
 
-    BudgetGrid(rows = table.rows, total = table.total, parentName = null, onRowClick = onRowClick)
+    Spacer(Modifier.height(8.dp))
+    BudgetGrid(
+        rows = table.rows,
+        total = table.total,
+        parentName = null,
+        onRowClick = onRowClick,
+        onParentClick = onParentClick,
+    )
     BudgetNote(differenceNote)
 
+    // Each category with sub-categories has its own table below. Where each
+    // one starts is noted, so tapping the category above can scroll to it.
     table.rows.filter { it.hasSubcategories }.forEach { parent ->
         Text(
             text = parent.name,
             style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+            modifier = Modifier
+                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp)
+                .onGloballyPositioned { coordinates ->
+                    onTablePlaced(parent.categoryId, coordinates.positionInParent().y.roundToInt())
+                },
         )
         BudgetGrid(
             rows = parent.subcategories,
             total = BudgetTotal(parent.expected, parent.actual, parent.difference),
             parentName = parent.name,
             onRowClick = onRowClick,
+            onParentClick = null,
         )
     }
 }
-
 /** Category, Expected, Actual and Difference, all four on screen without scrolling sideways. */
 @Composable
 private fun BudgetGrid(
@@ -180,6 +237,9 @@ private fun BudgetGrid(
     total: BudgetTotal,
     parentName: String?,
     onRowClick: (BudgetRow, String?) -> Unit,
+    // Set for the main table, where a category with sub-categories leads to
+    // their table further down.
+    onParentClick: ((BudgetRow) -> Unit)?,
 ) {
     Column(
         modifier = Modifier
@@ -199,7 +259,7 @@ private fun BudgetGrid(
             // A category with sub-categories has no amount of its own to set.
             val canSet = !row.hasSubcategories
             BudgetCells(
-                name = row.name,
+                name = if (!canSet && onParentClick != null) "${row.name} ›" else row.name,
                 expected = when {
                     row.expected != null -> formatMoney(row.expected)
                     canSet -> "Set"
@@ -209,10 +269,14 @@ private fun BudgetGrid(
                 difference = row.difference?.let(::formatMoney) ?: "—",
                 isMuted = !row.isEnabled,
                 expectedIsAction = canSet && row.expected == null,
-                onClick = if (canSet) {
-                    { onRowClick(row, parentName) }
-                } else {
-                    null
+                onClick = when {
+                    canSet -> {
+                        { onRowClick(row, parentName) }
+                    }
+                    onParentClick != null -> {
+                        { onParentClick(row) }
+                    }
+                    else -> null
                 },
             )
             HorizontalDivider()

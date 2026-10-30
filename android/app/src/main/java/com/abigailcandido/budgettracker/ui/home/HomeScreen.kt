@@ -1,6 +1,7 @@
 package com.abigailcandido.budgettracker.ui.home
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +49,10 @@ fun HomeScreen(
             )
             val state by viewModel.uiState.collectAsState()
 
+            // Each time the list shows, including coming back from a tracker
+            // whose Settings renamed or deleted it.
+            LaunchedEffect(Unit) { viewModel.refresh() }
+
             TrackerListScreen(
                 state = state,
                 bottomBar = bottomBar,
@@ -58,9 +63,6 @@ fun HomeScreen(
                         .orEmpty()
                     onOpenTracker(trackerId, name)
                 },
-                onDeleteClick = viewModel::onDeleteClick,
-                onConfirmDelete = viewModel::confirmDelete,
-                onDismissDelete = viewModel::onDismissDelete,
                 onAddClick = {
                     // Prepare the form first — this starts loading the category
                     // list — then open the page that shows it.
