@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_db
@@ -7,8 +7,10 @@ from app.models import (
     BudgetLimit,
     Category,
     MainTracker,
+    RecurringRule,
     SavingsTrackerLink,
     TrackerCategory,
+    Transaction,
     User,
     Wallet,
 )
@@ -202,14 +204,23 @@ def delete_tracker(
             detail="This tracker is linked to a savings tracker and cannot be deleted",
         )
 
-    has_private_categories = (
-        db.query(Category).filter(Category.main_tracker_id == tracker.id).first()
+    # The tracker's own categories, such as its Others and its Transfer Fee,
+    # were only ever offered here, so they go with it. Once its wallets are
+    # gone nothing should still use them, but if something does, the delete
+    # is refused rather than taking those records with it.
+    own_categories = select(Category.id).where(Category.main_tracker_id == tracker.id)
+    own_categories_in_use = (
+        db.query(Transaction.id).filter(Transaction.category_id.in_(own_categories)).first()
+        is not None
+        or db.query(RecurringRule.id)
+        .filter(RecurringRule.category_id.in_(own_categories))
+        .first()
         is not None
     )
-    if has_private_categories:
+    if own_categories_in_use:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Delete this tracker's private categories before deleting it",
+            detail="Entries still use this tracker's own categories, so it cannot be deleted",
         )
 
     # Category switches are bookkeeping rather than user data, so they are
@@ -219,6 +230,20 @@ def delete_tracker(
         TrackerCategory.main_tracker_id == tracker.id
     ).delete()
     db.query(BudgetLimit).filter(BudgetLimit.main_tracker_id == tracker.id).delete()
+    db.query(TrackerCategory).filter(
+        TrackerCategory.category_id.in_(own_categories)
+    ).delete(synchronize_session=False)
+    db.query(BudgetLimit).filter(
+        BudgetLimit.category_id.in_(own_categories)
+    ).delete(synchronize_session=False)
+    # Sub-categories first, since they point at their parents.
+    db.query(Category).filter(
+        Category.main_tracker_id == tracker.id,
+        Category.parent_id.is_not(None),
+    ).delete(synchronize_session=False)
+    db.query(Category).filter(Category.main_tracker_id == tracker.id).delete(
+        synchronize_session=False
+    )
 
     db.delete(tracker)
     db.commit()

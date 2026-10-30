@@ -7,6 +7,7 @@ from app.deps import get_current_user, get_db
 from app.models import (
     CATEGORY_EXPENSE,
     OTHERS_CATEGORY_NAME,
+    TRANSFER_FEE_CATEGORY_NAME,
     BudgetLimit,
     Category,
     MainTracker,
@@ -489,6 +490,23 @@ def list_categories(
     return [_to_response(category, parents) for category in categories]
 
 
+def _keeps_its_name(category: Category) -> bool:
+    """Others buckets, and Transfer Fee at the top level of expenses.
+
+    Both are found by their names: entries without a category are filed under
+    Others, and transfer fees under Transfer Fee. Renaming either would only
+    make the next entry start a new category of the old name.
+    """
+    name = category.name.lower()
+    if name == OTHERS_CATEGORY_NAME.lower():
+        return True
+    return (
+        category.parent_id is None
+        and category.kind == CATEGORY_EXPENSE
+        and name == TRANSFER_FEE_CATEGORY_NAME.lower()
+    )
+
+
 @router.patch(
     "/categories/{category_id}",
     response_model=CategoryResponse,
@@ -501,6 +519,16 @@ def rename_category(
     db: Session = Depends(get_db),
 ) -> CategoryResponse:
     category = get_owned_category(category_id, user, db)
+    if _keeps_its_name(category):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{category.name} keeps its name, because entries are filed under it by name",
+        )
+    if payload.name.lower() == OTHERS_CATEGORY_NAME.lower():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Others is kept for entries that have no category yet. Choose another name",
+        )
     _reject_duplicate_name(
         payload.name,
         category.kind,

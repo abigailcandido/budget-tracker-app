@@ -1985,6 +1985,47 @@ def main() -> None:
     status, _ = call("POST", "/transfers", token_b, move)
     check("another account's wallets cannot be used for a transfer", status, 404)
 
+    print("\nRenaming categories and deleting trackers")
+    status, _ = call(
+        "PATCH", f"/categories/{fee_row.get('category_id')}", token_a, {"name": "Bank charges"}
+    )
+    check("Transfer Fee keeps its name, since fees are filed under it by name", status, 409)
+
+    status, _ = call("PATCH", f"/categories/{id_of(others)}", token_a, {"name": "Misc"})
+    check("an Others bucket keeps its name too", status, 409)
+
+    status, trip = call("POST", "/trackers", token_a, {"name": "Short trip", "category_ids": []})
+    five = id_of(trip)
+    status, souvenirs = call(
+        "POST", "/categories", token_a, {"name": "Souvenirs", "main_tracker_id": five}
+    )
+    # This tracker has no Others yet, so only the rule itself can refuse it.
+    status, _ = call("PATCH", f"/categories/{id_of(souvenirs)}", token_a, {"name": " others "})
+    check("no category can be renamed to Others", status, 409)
+
+    status, keychains = call(
+        "POST", "/categories", token_a, {"name": "Keychains", "parent_id": id_of(souvenirs)}
+    )
+    status, trip_others = call(
+        "POST", f"/trackers/{five}/categories/others", token_a, {"kind": "expense"}
+    )
+    status, trip_bills_others = call(
+        "POST", f"/trackers/{five}/categories/others", token_a, {"parent_id": bills["id"]}
+    )
+    own_ids = {id_of(souvenirs), id_of(keychains), id_of(trip_others), id_of(trip_bills_others)}
+    status, _ = call("DELETE", f"/trackers/{five}", token_a)
+    _, everything = call("GET", "/categories", token_a)
+    check(
+        "deleting a tracker deletes the categories that are its own, Others included",
+        (
+            status,
+            None in own_ids,
+            sorted(own_ids & {row["id"] for row in everything or []}),
+            bills["id"] in {row["id"] for row in everything or []},
+        ),
+        (204, False, [], True),
+    )
+
     print("\nOwnership")
     status, _ = call("GET", f"/trackers/{one}", token_b)
     check("another account's tracker is not found", status, 404)
