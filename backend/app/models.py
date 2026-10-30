@@ -36,6 +36,9 @@ TRANSACTION_TRANSFER_IN = "transfer_in"
 # Every transfer fee is filed under this expense category, made in a tracker
 # the first time one of its transfers has a fee.
 TRANSFER_FEE_CATEGORY_NAME = "Transfer Fee"
+# A fee's note names the wallet its transfer went to. Renaming that wallet
+# renames it in the note too.
+TRANSFER_FEE_NOTE = "Fee for a transfer to {}"
 
 class User(Base):
     __tablename__ = "users"

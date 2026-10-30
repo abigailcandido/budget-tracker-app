@@ -673,8 +673,10 @@ class TransactionResponse(BaseModel):
     to_amount: str | None = None
     # On a transfer with a fee: the fee, in the currency of the wallet it left.
     fee: str | None = None
-    # On a transfer's fee: the transfer it belongs to.
+    # On a transfer's fee: the transfer it belongs to, and that transfer's
+    # latest version, which is the one to open to change the fee.
     fee_for_id: int | None = None
+    fee_transfer_id: int | None = None
     
 class WalletSummaryResponse(BaseModel):
     """One wallet's movement over a date range.

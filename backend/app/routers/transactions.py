@@ -18,7 +18,7 @@ from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.category_lookup import find_or_create_leaf, find_or_create_path, is_others, visible_in
@@ -40,6 +40,7 @@ from app.models import (
     TRANSACTION_TRANSFER_IN,
     TRANSACTION_TRANSFER_OUT,
     TRANSFER_FEE_CATEGORY_NAME,
+    TRANSFER_FEE_NOTE,
     Category,
     TrackerCategory,
     Transaction,
@@ -85,6 +86,22 @@ ArrivalWallet = aliased(Wallet)
 
 # On a transfer, its fee, if it has one.
 Fee = aliased(Transaction)
+
+# On a fee, the version of the transfer it was charged with, and the latest
+# version of that transfer: the newest row in its history that is not a
+# reversal. After a correction or a deletion, the fee can still find it.
+FeeFor = aliased(Transaction)
+TransferVersion = aliased(Transaction)
+_fee_for_origin = func.coalesce(FeeFor.origin_id, FeeFor.id)
+_latest_transfer = (
+    select(func.max(TransferVersion.id))
+    .where(
+        or_(TransferVersion.id == _fee_for_origin, TransferVersion.origin_id == _fee_for_origin),
+        TransferVersion.reverses_id.is_(None),
+    )
+    .correlate(FeeFor)
+    .scalar_subquery()
+)
 
 # --------------------------------------------------------------------------
 # Shared helpers
@@ -280,6 +297,7 @@ def _described(db: Session):
             Arrival,
             ArrivalWallet,
             Fee,
+            _latest_transfer,
         )
         .join(Wallet, Transaction.wallet_id == Wallet.id)
         .outerjoin(Category, Transaction.category_id == Category.id)
@@ -289,6 +307,7 @@ def _described(db: Session):
         .outerjoin(Arrival, Arrival.transfer_out_id == Transaction.id)
         .outerjoin(ArrivalWallet, Arrival.wallet_id == ArrivalWallet.id)
         .outerjoin(Fee, Fee.fee_for_id == Transaction.id)
+        .outerjoin(FeeFor, FeeFor.id == Transaction.fee_for_id)
     )
 
 
@@ -302,6 +321,7 @@ def _to_response(
     arrival: Transaction | None = None,
     arrival_wallet: Wallet | None = None,
     fee: Transaction | None = None,
+    fee_transfer_id: int | None = None,
 ) -> TransactionResponse:
     return TransactionResponse(
         id=transaction.id,
@@ -332,6 +352,7 @@ def _to_response(
         to_amount=format_money(arrival.amount) if arrival is not None else None,
         fee=format_money(fee.amount) if fee is not None else None,
         fee_for_id=transaction.fee_for_id,
+        fee_transfer_id=fee_transfer_id,
     )
 
 
@@ -392,6 +413,35 @@ def _transfer_fee_category(wallet: Wallet, user: User, db: Session) -> Category:
     return category
 
 
+def _removed_fee(departure: Transaction, db: Session) -> Transaction | None:
+    """The fee an earlier version of this transfer had, if a correction
+    removed it: the transfer's latest fee, when that fee is deleted. Adding a
+    fee back replaces it, so it is locked."""
+    origin = departure.origin_id or departure.id
+    versions = select(Transaction.id).where(
+        or_(Transaction.id == origin, Transaction.origin_id == origin),
+        Transaction.reverses_id.is_(None),
+    )
+    latest = (
+        db.query(Transaction)
+        .filter(Transaction.fee_for_id.in_(versions))
+        .order_by(Transaction.id.desc())
+        .with_for_update()
+        .first()
+    )
+    if latest is None:
+        return None
+    is_reversed = (
+        db.query(Transaction.id).filter(Transaction.reverses_id == latest.id).first()
+        is not None
+    )
+    is_replaced = (
+        db.query(Transaction.id).filter(Transaction.replaces_id == latest.id).first()
+        is not None
+    )
+    return latest if is_reversed and not is_replaced else None
+
+
 def _charge_fee(
     departure: Transaction,
     destination: Wallet,
@@ -399,10 +449,13 @@ def _charge_fee(
     category: Category,
     wallets: dict[int, Wallet],
     replaces: Transaction | None = None,
+    is_restoration: bool = False,
+    reason: str | None = None,
 ) -> Transaction:
     """A transfer's fee: an expense from the wallet the money left, applied to
     its balance. When the transfer is corrected, the new fee replaces the old
-    one. The departure must already have its id."""
+    one; when a removed fee is added back, it restores that one. The departure
+    must already have its id."""
     wallets[departure.wallet_id].balance += _effect(TRANSACTION_EXPENSE, amount)
     return Transaction(
         user_id=departure.user_id,
@@ -410,10 +463,12 @@ def _charge_fee(
         category_id=category.id,
         amount=amount,
         type=TRANSACTION_EXPENSE,
-        description=f"Fee for a transfer to {destination.name}"[:255],
+        description=TRANSFER_FEE_NOTE.format(destination.name)[:255],
         transaction_date=departure.transaction_date,
         replaces_id=replaces.id if replaces is not None else None,
         origin_id=(replaces.origin_id or replaces.id) if replaces is not None else None,
+        is_restoration=is_restoration,
+        reason=reason,
         fee_for_id=departure.id,
     )
 
@@ -1438,6 +1493,11 @@ def update_transfer(
     fee = _fee(departure, db)
     old_fee = fee.amount if fee is not None else None
     new_fee = payload.fee if "fee" in payload.model_fields_set else old_fee
+    # A fee removed earlier and now added back carries on that fee's history,
+    # the way a restore does, instead of starting a new expense.
+    removed_fee = (
+        _removed_fee(departure, db) if fee is None and new_fee is not None else None
+    )
 
     unchanged = (
         source.id == departure.wallet_id
@@ -1476,10 +1536,22 @@ def update_transfer(
     db.flush()
     wallets[source.id].balance += _effect(TRANSACTION_TRANSFER_OUT, amount)
     db.add(_arrive(correction, destination.id, received, wallets))
-    # A fee the transfer keeps is corrected along with it, so its history
-    # carries on; a fee added now starts one of its own.
+    # A fee the transfer keeps is corrected along with it, and one added back
+    # restores the removed one, so either way its history carries on. Only a
+    # transfer's first fee starts a history of its own.
     if fee_category is not None:
-        db.add(_charge_fee(correction, destination, new_fee, fee_category, wallets, replaces=fee))
+        db.add(
+            _charge_fee(
+                correction,
+                destination,
+                new_fee,
+                fee_category,
+                wallets,
+                replaces=fee or removed_fee,
+                is_restoration=removed_fee is not None,
+                reason=payload.reason if removed_fee is not None else None,
+            )
+        )
     db.commit()
     
     return _load_response(correction.id, db)

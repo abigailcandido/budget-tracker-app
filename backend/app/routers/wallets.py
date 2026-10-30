@@ -1,11 +1,11 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased
 
 from app.deps import get_current_user, get_db
-from app.models import TRANSACTION_OPENING, Transaction, User, Wallet
+from app.models import TRANSACTION_OPENING, TRANSFER_FEE_NOTE, Transaction, User, Wallet
 from app.ownership import get_owned_tracker, get_owned_wallet
 from app.schemas import (
     WalletCreateRequest,
@@ -133,6 +133,28 @@ def get_wallet(
     return _to_response(get_owned_wallet(wallet_id, user, db))
 
 
+def _rename_in_fee_notes(wallet: Wallet, old_name: str, db: Session) -> None:
+    """Transfer fees name the wallet their transfer went to in their note, so
+    those notes follow the wallet's new name, and so do the reversals that
+    copied them. A note that says anything else is left as it is."""
+    old_note = TRANSFER_FEE_NOTE.format(old_name)[:255]
+    new_note = TRANSFER_FEE_NOTE.format(wallet.name)[:255]
+    arrival = aliased(Transaction)
+    fee_ids = [
+        fee_id
+        for (fee_id,) in db.query(Transaction.id)
+        .join(arrival, arrival.transfer_out_id == Transaction.fee_for_id)
+        .filter(arrival.wallet_id == wallet.id, Transaction.description == old_note)
+        .all()
+    ]
+    if not fee_ids:
+        return
+    db.query(Transaction).filter(
+        or_(Transaction.id.in_(fee_ids), Transaction.reverses_id.in_(fee_ids)),
+        Transaction.description == old_note,
+    ).update({Transaction.description: new_note}, synchronize_session=False)
+
+
 @router.patch(
     "/wallets/{wallet_id}",
     response_model=WalletResponse,
@@ -147,7 +169,10 @@ def rename_wallet(
     wallet = get_owned_wallet(wallet_id, user, db)
     _reject_duplicate_name(payload.name, wallet.main_tracker_id, db, exclude_id=wallet.id)
 
+    old_name = wallet.name
     wallet.name = payload.name
+    if payload.name != old_name:
+        _rename_in_fee_notes(wallet, old_name, db)
     db.commit()
     db.refresh(wallet)
 

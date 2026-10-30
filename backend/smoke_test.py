@@ -1917,22 +1917,44 @@ def main() -> None:
         (200, "20.00", "270.00", [("20.00", False)], []),
     )
     status, unfeed = call("PATCH", f"/transfers/{id_of(refeed)}", token_a, {"fee": None})
+    removed = [row for row in expense_rows() if row["fee_for_id"] == id_of(refeed)]
     check(
         "and removed by sending no fee, which deletes it",
         (status, (unfeed or {}).get("fee"), balances().get("Spending"), current_fees(refeed)),
         (200, None, "290.00", [("20.00", True)]),
     )
+    check(
+        "a removed fee still leads to its transfer's latest version",
+        [row["fee_transfer_id"] == id_of(unfeed) for row in removed],
+        [True],
+    )
     status, feed = call("PATCH", f"/transfers/{id_of(unfeed)}", token_a, {"fee": "5.00"})
     added = [row for row in expense_rows() if row["fee_for_id"] == id_of(feed)]
     check(
-        "a fee can be added while correcting, under the same Transfer Fee",
+        "a fee added back carries on the removed fee's history, under the same Transfer Fee",
         (
             status,
             (feed or {}).get("fee"),
             balances().get("Spending"),
-            [(row["category_id"] == fee_row.get("category_id"), row["replaces_id"]) for row in added],
+            [
+                (
+                    row["category_id"] == fee_row.get("category_id"),
+                    row["replaces_id"] == id_of(removed[0] if removed else None),
+                    row["is_restoration"],
+                )
+                for row in added
+            ],
+            current_fees(refeed),
         ),
-        (200, "5.00", "285.00", [(True, None)]),
+        (200, "5.00", "285.00", [(True, True, True)], []),
+    )
+    status, fee_history = call(
+        "GET", f"/transactions/{id_of(added[0] if added else None)}/history", token_a
+    )
+    check(
+        "and its history keeps every amount, the removal included",
+        [(row["amount"], row["reverses_id"] is not None) for row in fee_history or []],
+        [("15.00", False), ("-15.00", True), ("20.00", False), ("-20.00", True), ("5.00", False)],
     )
     check(
         "deleting a transfer deletes its fee too",
@@ -1948,6 +1970,17 @@ def main() -> None:
     
     status, _ = call("DELETE", f"/wallets/{id_of(savings)}", token_a)
     check("a wallet a transfer went to cannot be deleted", status, 409)
+
+    status, _ = call("PATCH", f"/wallets/{id_of(savings)}", token_a, {"name": "Savings Jar"})
+    check(
+        "renaming a wallet renames it everywhere, its transfers' fee notes included",
+        (
+            status,
+            {row["description"] for row in expense_rows() if row["fee_for_id"] is not None},
+            sorted({row["to_wallet_name"] for row in transfer_rows()}),
+        ),
+        (200, {"Fee for a transfer to Savings Jar"}, ["Savings Jar", "Travel"]),
+    )
 
     status, _ = call("POST", "/transfers", token_b, move)
     check("another account's wallets cannot be used for a transfer", status, 404)
