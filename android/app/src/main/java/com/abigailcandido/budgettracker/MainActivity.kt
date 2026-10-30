@@ -421,6 +421,7 @@ private fun SignedInNavHost(
                     onPromoteSubcategoryAsGlobalChange = trackerViewModel::onPromoteSubcategoryAsGlobalChange,
                     onConfirmPromote = trackerViewModel::confirmPromote,
                     onDismissPromote = trackerViewModel::onDismissPromote,
+                    onOpenTransferClick = trackerViewModel::onOpenFeeTransfer,
                 )
             }
         }

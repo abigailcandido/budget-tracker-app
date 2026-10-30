@@ -49,12 +49,14 @@ enum class EntryFilter(val label: String) {
     Budget("Budget"),
     All("All Transactions"),
     Income("Income"),
-    Expenses("Expenses");
+    Expenses("Expenses"),
+    Transfers("Transfers");
 
     fun matches(type: EntryType): Boolean = when (this) {
         Overview, Budget, All -> true
         Income -> type == EntryType.Income
         Expenses -> type == EntryType.Expense
+        Transfers -> type == EntryType.Transfer
     }
 }
 
@@ -491,6 +493,14 @@ class TrackerViewModel(
         _uiState.update { it.copy(entryDetail = null) }
     }
 
+    /** From a transfer's fee to its transfer, which is where the fee is changed. */
+    fun onOpenFeeTransfer() {
+        val current = _uiState.value
+        val transferId = current.entryDetail?.entry?.feeForId ?: return
+        val transfer = current.transactions.firstOrNull { it.id == transferId } ?: return
+        onEntryClick(transfer)
+    }
+
     /** Edit asks for the PIN every time, before the form opens. A deleted entry has no Edit. */
     fun onEditEntryClick() {
         updateDetail { detail ->
@@ -823,26 +833,31 @@ class TrackerViewModel(
     // ---- The add-or-edit transaction page ----
 
     /**
-     * Opens a blank form. It starts as an income on the Income tab and an
-     * expense everywhere else, in the selected wallet or else the first one,
-     * dated today, or the last day of the period showing if that is over.
+     * Opens a blank form. It starts as an income on the Income tab, a transfer
+     * on the Transfers tab, and an expense everywhere else, in the selected
+     * wallet or else the first one, dated today, or the last day of the period
+     * showing if that is over.
      */
     fun onAddEntryClick() {
         val current = _uiState.value
         val wallet = current.selectedWallet ?: current.wallets.firstOrNull() ?: return
         val today = LocalDate.now()
+        // A transfer goes to the first other wallet, so it needs one.
+        val otherWallet = current.wallets.firstOrNull { it.id != wallet.id }
+        val type = when {
+            current.filter == EntryFilter.Income -> EntryType.Income
+            current.filter == EntryFilter.Transfers && otherWallet != null -> EntryType.Transfer
+            else -> EntryType.Expense
+        }
 
         _uiState.update {
             it.copy(
                 entryForm = EntryForm(
-                    type = if (current.filter == EntryFilter.Income) {
-                        EntryType.Income
-                    } else {
-                        EntryType.Expense
-                    },
+                    type = type,
                     walletId = wallet.id,
                     date = if (current.range.end.isBefore(today)) current.range.end else today,
                     walletCurrencies = current.wallets.associate { it.id to it.currency },
+                    toWalletId = otherWallet?.id.takeIf { type == EntryType.Transfer },
                 ),
             )
         }
@@ -873,6 +888,7 @@ class TrackerViewModel(
                         .getOrDefault(LocalDate.now()),
                     note = entry.description.orEmpty(),
                     toWalletId = entry.toWalletId,
+                    fee = entry.fee.orEmpty(),
                     // Between wallets of one currency, what arrives is what
                     // leaves, so there is nothing to show twice.
                     toAmount = entry.toAmount
@@ -1165,7 +1181,7 @@ class TrackerViewModel(
         }
     }
 
-    /** The optional fee on a new transfer. */
+    /** The optional fee on a transfer. */
     fun onEntryFeeChange(value: String) {
         updateForm { form ->
             if (form.acceptsAmount(value)) form.copy(fee = value, error = null) else form
@@ -1173,8 +1189,8 @@ class TrackerViewModel(
     }
 
     /**
-     * Saves a new transfer, or corrects one as a whole. A fee is only on a
-     * new transfer, and needs its category fetched first when it is Others.
+     * Saves a new transfer, or corrects one as a whole, fee included. The
+     * server files the fee under Transfer Fee.
      */
     private fun saveTransfer(form: EntryForm) {
         val fromWalletId = form.walletId ?: return
@@ -1187,25 +1203,9 @@ class TrackerViewModel(
             // Between wallets of one currency, what arrives is what leaves.
             val toAmount = form.toAmount.takeIf { form.needsAmountReceived }
 
-            val feeCategoryId: Int? = when {
-                !form.hasFee -> null
-                form.isOthersChosen -> {
-                    when (
-                        val others = categoryRepository.othersCategory(
-                            trackerId,
-                            CategoryKind.Expense,
-                            form.othersParentId,
-                        )
-                    ) {
-                        is ApiResult.Success -> others.data.id
-                        is ApiResult.Failure -> {
-                            updateForm { it.copy(isSaving = false, error = others.message) }
-                            return@launch
-                        }
-                    }
-                }
-                else -> form.leafCategoryId
-            }
+            // An empty or zero Fee field means no fee, which also removes one
+            // when correcting.
+            val fee = form.fee.takeIf { form.hasFee }
 
             val editingId = form.editingId
             val result = if (editingId != null) {
@@ -1217,6 +1217,7 @@ class TrackerViewModel(
                     toAmount = toAmount,
                     date = date,
                     description = form.note,
+                    fee = fee,
                     reason = form.reason,
                 )
             } else {
@@ -1227,8 +1228,7 @@ class TrackerViewModel(
                     toAmount = toAmount,
                     date = date,
                     description = form.note,
-                    fee = form.fee.takeIf { form.hasFee },
-                    feeCategoryId = feeCategoryId,
+                    fee = fee,
                 )
             }
 

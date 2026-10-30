@@ -101,7 +101,8 @@ class TransactionRepository(
 
     /**
      * Moves money from one wallet of the tracker to another. Between two
-     * currencies, toAmount is what arrives. A fee becomes an expense of its own.
+     * currencies, toAmount is what arrives. A fee becomes an expense under
+     * Transfer Fee, from the wallet the money leaves.
      */
     suspend fun createTransfer(
         fromWalletId: Int,
@@ -111,10 +112,8 @@ class TransactionRepository(
         date: String,
         description: String?,
         fee: String?,
-        feeCategoryId: Int?,
     ): ApiResult<TransactionResponse> =
         tokenStore.withToken { token ->
-            val cleanFee = fee.cleaned()
             api.createTransfer(
                 token,
                 TransferCreateRequest(
@@ -124,13 +123,15 @@ class TransactionRepository(
                     toAmount = toAmount.cleaned(),
                     transactionDate = date,
                     description = description.cleaned(),
-                    fee = cleanFee,
-                    feeCategoryId = feeCategoryId.takeIf { cleanFee != null },
+                    fee = fee.cleaned(),
                 ),
             )
         }
 
-    /** Corrects a transfer as a whole. The corrected transfer has a new id. */
+    /**
+     * Corrects a transfer as a whole, fee included: a null fee removes it. The
+     * corrected transfer has a new id.
+     */
     suspend fun updateTransfer(
         transferId: Int,
         fromWalletId: Int,
@@ -139,6 +140,7 @@ class TransactionRepository(
         toAmount: String?,
         date: String,
         description: String?,
+        fee: String?,
         reason: String?,
     ): ApiResult<TransactionResponse> =
         tokenStore.withToken { token ->
@@ -152,6 +154,7 @@ class TransactionRepository(
                     toAmount = toAmount.cleaned(),
                     transactionDate = date,
                     description = description.cleaned(),
+                    fee = fee.cleaned(),
                     reason = reason.cleaned(),
                 ),
             )

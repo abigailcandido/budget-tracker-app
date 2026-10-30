@@ -625,6 +625,7 @@ private fun EntryList(
                     EntryFilter.All, EntryFilter.Overview, EntryFilter.Budget -> "No transactions"
                     EntryFilter.Expenses -> "No expenses"
                     EntryFilter.Income -> "No income"
+                    EntryFilter.Transfers -> "No transfers"
                 } + " in ${state.range.label}",
                 style = MaterialTheme.typography.titleMedium,
                 textAlign = TextAlign.Center,

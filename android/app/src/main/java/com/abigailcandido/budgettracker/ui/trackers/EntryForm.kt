@@ -117,8 +117,8 @@ data class EntryForm(
     /** On a transfer between two currencies: what arrives, in the other wallet's currency. */
     val toAmount: String = "",
     /**
-     * On a new transfer: an optional fee, recorded as an expense of its own
-     * from the wallet the money leaves. The Category fields are its category.
+     * On a transfer: an optional fee, recorded as an expense from the wallet
+     * the money leaves, always under Transfer Fee.
      */
     val fee: String = "",
     /** Each wallet's currency, so a transfer knows when it crosses currencies. */
@@ -149,9 +149,9 @@ data class EntryForm(
                 toWalletId != null &&
                 walletCurrencies[walletId] != walletCurrencies[toWalletId]
 
-    /** A fee above zero, which then needs a category. Only a new transfer has one. */
+    /** A fee above zero. An empty or zero Fee field means no fee. */
     val hasFee: Boolean
-        get() = isTransfer && isNew && (fee.toBigDecimalOrNull()?.signum() ?: 0) > 0
+        get() = isTransfer && (fee.toBigDecimalOrNull()?.signum() ?: 0) > 0
 
     /** Expense categories for an expense, income categories for an income. */
     val availableCategories: List<CategoryOption>
@@ -276,7 +276,8 @@ data class EntryForm(
 
     fun categoriesFor(entryType: EntryType): List<CategoryOption> {
         val kind = when (entryType) {
-            // A transfer's categories are for its fee, which is an expense.
+            // A transfer has no category, but keeping the expense ones means
+            // switching to Transfer and back keeps the category chosen.
             EntryType.Expense, EntryType.Transfer -> CategoryKind.Expense
             EntryType.Income -> CategoryKind.Income
             EntryType.Opening -> return emptyList()
@@ -301,13 +302,12 @@ data class EntryForm(
             return when {
                 // An opening balance of zero is deleted, not saved.
                 isOpening -> value.signum() != 0
-                // Under Others, a fee is named "Transfer fee" by the server.
+                // A fee needs nothing more: it always goes under Transfer Fee.
                 isTransfer -> value.signum() > 0 &&
                         walletId != null &&
                         toWalletId != null &&
                         toWalletId != walletId &&
-                        (!needsAmountReceived || (toAmount.toBigDecimalOrNull()?.signum() ?: 0) > 0) &&
-                        (!hasFee || isOthersChosen || leafCategoryId != null)
+                        (!needsAmountReceived || (toAmount.toBigDecimalOrNull()?.signum() ?: 0) > 0)
                 else -> value.signum() > 0 && walletId != null && hasCompleteCategory
             }
         }

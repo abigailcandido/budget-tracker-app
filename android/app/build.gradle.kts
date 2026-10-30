@@ -14,8 +14,8 @@ android {
         applicationId = "com.abigailcandido.budgettracker"
         minSdk = 24
         targetSdk = 37
-        versionCode = 311
-        versionName = "0.3.11"
+        versionCode = 312
+        versionName = "0.3.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

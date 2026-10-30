@@ -82,6 +82,7 @@ fun EntryDetailScreen(
     onPromoteSubcategoryAsGlobalChange: (Boolean) -> Unit,
     onConfirmPromote: () -> Unit,
     onDismissPromote: () -> Unit,
+    onOpenTransferClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     BackHandler(onBack = onBack)
@@ -119,7 +120,19 @@ fun EntryDetailScreen(
                     .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (entry.isDeleted) {
+                // A transfer's fee is changed only along with its transfer.
+                if (entry.feeForId != null) {
+                    OutlinedButton(onClick = onOpenTransferClick, modifier = Modifier.fillMaxWidth()) {
+                        Text("Open the transfer")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "This fee belongs to a transfer. To change, delete or " +
+                                "restore it, open the transfer.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (entry.isDeleted) {
                     Button(onClick = onRestoreClick, modifier = Modifier.fillMaxWidth()) {
                         Text("Restore")
                     }
@@ -193,6 +206,10 @@ fun EntryDetailScreen(
                 // Between two currencies, each wallet moved by its own amount.
                 if (entry.toCurrency != null && entry.toCurrency != entry.currency) {
                     DetailRow("Received", "${entry.toCurrency} ${formatMoney(entry.toAmount.orEmpty())}")
+                }
+                // The fee is an expense of its own, under Transfer Fee.
+                if (entry.fee != null) {
+                    DetailRow("Fee", "${entry.currency} ${formatMoney(entry.fee.orEmpty())}")
                 }
             } else {
                 if (!isOpening) DetailRow("Category", entryTitle(entry))
@@ -300,7 +317,8 @@ private fun DeleteDialog(
                 Text(
                     text = "It stays in the list marked Deleted, with its history, and " +
                             (if (entry.entryType == EntryType.Transfer) {
-                                "the money goes back to ${entry.walletName}. "
+                                "the money goes back to ${entry.walletName}" +
+                                        (if (entry.fee != null) ", with its fee. " else ". ")
                             } else {
                                 "stops counting towards ${entry.walletName}'s balance. "
                             }) + "You can restore it later.",
@@ -401,7 +419,8 @@ private fun RestoreDialog(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     text = (if (entry.entryType == EntryType.Transfer) {
-                        "The money moves from ${entry.walletName} to ${entry.toWalletName} again. "
+                        "The money moves from ${entry.walletName} to ${entry.toWalletName} again" +
+                                (if (entry.fee != null) ", with its fee. " else ". ")
                     } else {
                         "It counts towards ${entry.walletName}'s balance again. "
                     }) + "The deletion stays in its history.",

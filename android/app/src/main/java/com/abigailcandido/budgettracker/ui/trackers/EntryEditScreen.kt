@@ -226,44 +226,26 @@ fun EntryEditScreen(
                     )
                 }
 
-                // Only a new transfer has a fee. It is saved as an expense of
-                // its own, which is corrected or deleted like any other.
-                if (form.isNew) {
-                    OutlinedTextField(
-                        value = form.fee,
-                        onValueChange = onFeeChange,
-                        label = { Text("Fee (optional)") },
-                        prefix = { Text("$currency ") },
-                        placeholder = { Text("0.00") },
-                        singleLine = true,
-                        enabled = !form.isBusy,
-                        supportingText = {
-                            Text(
-                                "Saved as an expense from ${wallet?.name.orEmpty()}, " +
-                                        "under the category you choose."
-                            )
-                        },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (form.hasFee) {
-                        CategorySection(
-                            form = form,
-                            selectedCategory = selectedCategory,
-                            selectedSubcategory = selectedSubcategory,
-                            onOpenCategory = { openPicker = Picker.Category },
-                            onOpenSubcategory = { openPicker = Picker.Subcategory },
-                            onOtherNameChange = onOtherNameChange,
-                            onUseCategoryMatch = onUseCategoryMatch,
-                            onAddToCategoriesChange = onAddToCategoriesChange,
-                            onWithSubcategoryChange = onWithSubcategoryChange,
-                            onSubcategoryNameChange = onSubcategoryNameChange,
-                            onAddAsGlobalChange = onAddAsGlobalChange,
-                            onAddSubcategoryAsGlobalChange = onAddSubcategoryAsGlobalChange,
-                            onRetry = onRetryCategories,
+                // A transfer's fee, when adding it or correcting it. It is saved
+                // as an expense under Transfer Fee, and changes only along with
+                // the transfer. Emptying the field removes it.
+                OutlinedTextField(
+                    value = form.fee,
+                    onValueChange = onFeeChange,
+                    label = { Text("Fee (optional)") },
+                    prefix = { Text("$currency ") },
+                    placeholder = { Text("0.00") },
+                    singleLine = true,
+                    enabled = !form.isBusy,
+                    supportingText = {
+                        Text(
+                            "Saved as an expense from ${wallet?.name.orEmpty()}, " +
+                                    "under Transfer Fee."
                         )
-                    }
-                }
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth(),
+                )
             } else if (!form.isOpening) {
                 CategorySection(
                     form = form,

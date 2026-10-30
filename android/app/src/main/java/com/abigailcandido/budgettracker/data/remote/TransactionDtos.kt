@@ -79,9 +79,8 @@ data class TransferCreateRequest(
     @SerialName("to_amount") val toAmount: String? = null,
     @SerialName("transaction_date") val transactionDate: String,
     val description: String? = null,
-    // Optional: a charge for the transfer, recorded as an expense of its own.
+    // Optional: a charge for the transfer, recorded as an expense under Transfer Fee.
     val fee: String? = null,
-    @SerialName("fee_category_id") val feeCategoryId: Int? = null,
 )
 
 @Serializable
@@ -94,6 +93,8 @@ data class TransferUpdateRequest(
     @SerialName("transaction_date") val transactionDate: String,
     // No default, so it is always sent, null included, and a cleared note is cleared.
     val description: String?,
+    // The same: an empty Fee field is sent as null, which removes the fee.
+    val fee: String?,
     val reason: String? = null,
 )
 
@@ -159,6 +160,10 @@ data class TransactionResponse(
     @SerialName("to_wallet_name") val toWalletName: String? = null,
     @SerialName("to_currency") val toCurrency: String? = null,
     @SerialName("to_amount") val toAmount: String? = null,
+    // On a transfer with a fee: the fee, in the currency of the wallet it left.
+    val fee: String? = null,
+    // On a transfer's fee: the transfer it belongs to, which is where it is changed.
+    @SerialName("fee_for_id") val feeForId: Int? = null,
 )
 
 val TransactionResponse.entryType: EntryType
